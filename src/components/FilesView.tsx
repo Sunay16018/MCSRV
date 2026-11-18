@@ -16,6 +16,8 @@ import {
 import type { FileNode } from '../shared/types.ts';
 import { CodeMirrorEditor } from './CodeMirrorEditor.tsx';
 
+import { apiFetch } from '../hooks/useServerSocket.ts';
+
 interface FilesViewProps {
   initialFilePath?: string | null;
   onToast: (level: 'success' | 'warn' | 'error', title: string, message: string) => void;
@@ -38,7 +40,7 @@ export function FilesView({ initialFilePath, onToast }: FilesViewProps) {
   const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(null);
 
   const loadTree = useCallback(async () => {
-    const res = await fetch('/api/files/tree');
+    const res = await apiFetch('/api/files/tree');
     const data = await res.json();
     setTree(data.tree ?? []);
   }, []);
@@ -46,7 +48,7 @@ export function FilesView({ initialFilePath, onToast }: FilesViewProps) {
   const openFile = useCallback(async (filePath: string) => {
     setLoadingFile(true);
     try {
-      const res = await fetch(`/api/files/read?path=${encodeURIComponent(filePath)}`);
+      const res = await apiFetch(`/api/files/read?path=${encodeURIComponent(filePath)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to read file');
       setSelectedPath(data.path);
@@ -74,7 +76,7 @@ export function FilesView({ initialFilePath, onToast }: FilesViewProps) {
     if (!selectedPath || saving) return;
     setSaving(true);
     try {
-      const res = await fetch('/api/files/write', {
+      const res = await apiFetch('/api/files/write', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: selectedPath, content: editorContent }),
@@ -97,7 +99,7 @@ export function FilesView({ initialFilePath, onToast }: FilesViewProps) {
     e.preventDefault();
     if (!creatingMode || !newEntryPath.trim()) return;
     try {
-      const res = await fetch('/api/files/create', {
+      const res = await apiFetch('/api/files/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: newEntryPath.trim(), type: creatingMode }),
@@ -120,7 +122,7 @@ export function FilesView({ initialFilePath, onToast }: FilesViewProps) {
     e.preventDefault();
     if (!renamingPath || !renameTarget.trim()) return;
     try {
-      const res = await fetch('/api/files/rename', {
+      const res = await apiFetch('/api/files/rename', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ oldPath: renamingPath, newPath: renameTarget.trim() }),
@@ -140,7 +142,7 @@ export function FilesView({ initialFilePath, onToast }: FilesViewProps) {
 
   const handleDeleteConfirm = async (targetPath: string) => {
     try {
-      const res = await fetch('/api/files/delete', {
+      const res = await apiFetch('/api/files/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: targetPath }),
@@ -369,7 +371,6 @@ export function FilesView({ initialFilePath, onToast }: FilesViewProps) {
               disabled={loadingFile}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <X className="w-3.5 h-3.5 hidden" />
               <RefreshCw className="w-3.5 h-3.5" />
               Revert
             </button>

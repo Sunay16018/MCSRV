@@ -22,6 +22,13 @@ import {
   sendMalformedShieldTest,
   spawnRealProtocolBot,
 } from './src/server/protocol/testClient.ts';
+import { PRIMARY_PROTOCOL_VERSION, SUPPORTED_RANGE_LABEL } from './src/server/protocol/mapper.ts';
+import {
+  detectHostIpv4,
+  extractRequestIp,
+  isIpAllowed,
+  timingSafeTokenMatch,
+} from './src/server/security.ts';
 
 const WEB_PORT = Number(process.env.PORT) || 3000;
 
@@ -33,6 +40,48 @@ async function bootstrap(): Promise<void> {
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 
   const mcServer = new MinecraftServerEngine();
+
+  // Security headers (preserve iframe embedding compatibility for preview environments)
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'same-origin');
+    next();
+  });
+
+  const getTokenFromHeaders = (headers: http.IncomingHttpHeaders, queryToken?: string): string | undefined => {
+    const headerToken = headers['x-panel-token'];
+    if (typeof headerToken === 'string' && headerToken.trim()) return headerToken.trim();
+    const auth = headers.authorization;
+    if (typeof auth === 'string' && auth.startsWith('Bearer ')) return auth.slice(7).trim();
+    if (queryToken && queryToken.trim()) return queryToken.trim();
+    return undefined;
+  };
+
+  // AWS Security Guard for /api/* routes
+  app.use('/api', (req, res, next) => {
+    const cfg = mcServer.getConfig();
+    const clientIp = extractRequestIp(req);
+
+    if (cfg.security.ipWhitelistEnabled && !isIpAllowed(clientIp, cfg.security.allowedIps)) {
+      res.status(403).json({ error: `Access denied for IP ${clientIp}` });
+      return;
+    }
+
+    if (req.path === '/auth/status' || req.path === '/auth/verify') {
+      next();
+      return;
+    }
+
+    if (cfg.security.protectWebPanel && cfg.security.panelAccessToken) {
+      const provided = getTokenFromHeaders(req.headers);
+      if (!timingSafeTokenMatch(provided, cfg.security.panelAccessToken)) {
+        res.status(401).json({ error: 'Panel Access Token required' });
+        return;
+      }
+    }
+
+    next();
+  });
 
   const broadcastWs = (event: WsServerEvent) => {
     const payload = JSON.stringify(event);
@@ -52,7 +101,24 @@ async function bootstrap(): Promise<void> {
   mcServer.on('plugins', (payload) => broadcastWs({ type: 'plugins', payload }));
   mcServer.on('config', (payload) => broadcastWs({ type: 'config', payload }));
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
+    const cfg = mcServer.getConfig();
+    const clientIp = extractRequestIp(req);
+    const reqUrl = new URL(req.url || '/ws', 'http://localhost');
+    const queryToken = reqUrl.searchParams.get('token') ?? undefined;
+
+    if (cfg.security.ipWhitelistEnabled && !isIpAllowed(clientIp, cfg.security.allowedIps)) {
+      ws.close(1008, 'IP not whitelisted');
+      return;
+    }
+    if (cfg.security.protectWebPanel && cfg.security.panelAccessToken) {
+      const provided = getTokenFromHeaders(req.headers, queryToken);
+      if (!timingSafeTokenMatch(provided, cfg.security.panelAccessToken)) {
+        ws.close(1008, 'Invalid panel token');
+        return;
+      }
+    }
+
     const initPayload: WsServerEvent = {
       type: 'init',
       payload: {
@@ -67,6 +133,54 @@ async function bootstrap(): Promise<void> {
       },
     };
     ws.send(JSON.stringify(initPayload));
+  });
+
+  // --- Auth & Network Discovery API ---
+  app.get('/api/auth/status', (req, res) => {
+    const cfg = mcServer.getConfig();
+    const provided = getTokenFromHeaders(req.headers);
+    const authorized =
+      !cfg.security.protectWebPanel ||
+      !cfg.security.panelAccessToken ||
+      timingSafeTokenMatch(provided, cfg.security.panelAccessToken);
+    res.json({
+      protected: Boolean(cfg.security.protectWebPanel && cfg.security.panelAccessToken),
+      authorized,
+      clientIp: extractRequestIp(req),
+    });
+  });
+
+  app.post('/api/auth/verify', (req, res) => {
+    const cfg = mcServer.getConfig();
+    const { token } = req.body as { token?: string };
+    const ok =
+      !cfg.security.protectWebPanel ||
+      !cfg.security.panelAccessToken ||
+      timingSafeTokenMatch(token?.trim(), cfg.security.panelAccessToken);
+    if (!ok) {
+      res.status(401).json({ ok: false, error: 'Invalid Access Token' });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  app.get('/api/network-info', (req, res) => {
+    const cfg = mcServer.getConfig();
+    const detectedIp = detectHostIpv4();
+    const clientIp = extractRequestIp(req);
+    const reqHost = (req.headers.host || '').split(':')[0];
+    const hostToUse = cfg.publicHost || (detectedIp !== '127.0.0.1' ? detectedIp : reqHost || '127.0.0.1');
+    const isCloudContainer =
+      Boolean(process.env.K_SERVICE || process.env.RENDER || reqHost.endsWith('.run.app') || reqHost.endsWith('.onrender.com'));
+
+    res.json({
+      connectAddress: `${hostToUse}:${cfg.port}`,
+      detectedIp,
+      clientIp,
+      port: cfg.port,
+      isCloudContainer,
+      supportedRange: SUPPORTED_RANGE_LABEL,
+    });
   });
 
   // --- Server Lifecycle API ---
@@ -321,10 +435,11 @@ async function bootstrap(): Promise<void> {
 
   app.post('/api/probe/spawn', async (req, res) => {
     try {
-      const { username } = req.body as { username?: string };
+      const { username, protocolVersion } = req.body as { username?: string; protocolVersion?: number };
       const chosen = (username || `Probe_${Math.floor(100 + Math.random() * 900)}`).slice(0, 16);
-      await spawnRealProtocolBot(mcServer.getConfig().port, chosen);
-      res.json({ ok: true, username: chosen });
+      const proto = Number(protocolVersion) || PRIMARY_PROTOCOL_VERSION;
+      await spawnRealProtocolBot(mcServer.getConfig().port, chosen, proto);
+      res.json({ ok: true, username: chosen, protocolVersion: proto });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

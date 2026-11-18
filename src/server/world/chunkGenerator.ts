@@ -52,16 +52,27 @@ export class WorldEngine {
   }
 
   // Builds a valid Minecraft Level Chunk With Light packet payload (24 sections: y=-64..319)
-  buildChunkPacketPayload(chunkX: number, chunkZ: number): Buffer {
+  // Supports both NBT Heightmaps (1.21-1.21.4 / <770) and Flat Heightmap Arrays (1.21.5-26.3 / >=770)
+  buildChunkPacketPayload(chunkX: number, chunkZ: number, usesFlatHeightmaps = true): Buffer {
     const w = new PacketWriter();
     w.writeInt(chunkX);
     w.writeInt(chunkZ);
 
-    // Heightmaps (Network NBT: MOTION_BLOCKING long array)
     const heightmapLongs = new Array<bigint>(37).fill(0n);
-    w.writeNbtCompoundStart();
-    w.writeNbtLongArray('MOTION_BLOCKING', heightmapLongs);
-    w.writeNbtEnd();
+    if (usesFlatHeightmaps) {
+      // Protocol 770+ (1.21.5 - 26.3): Prefixed array of (Type VarInt, Longs VarInt + data)
+      w.writeVarInt(1); // 1 heightmap entry
+      w.writeVarInt(4); // 4 = MOTION_BLOCKING
+      w.writeVarInt(heightmapLongs.length);
+      for (const l of heightmapLongs) {
+        w.writeLong(l);
+      }
+    } else {
+      // Protocol 767 - 769 (1.21 - 1.21.4): Network NBT Compound
+      w.writeNbtCompoundStart();
+      w.writeNbtLongArray('MOTION_BLOCKING', heightmapLongs);
+      w.writeNbtEnd();
+    }
 
     // Build 24 sections (index 0 = y -64..-49 ... index 7 = y 48..63)
     const chunkData = new PacketWriter();

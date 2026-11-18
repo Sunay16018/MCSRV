@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Eraser, Pause, Play, Search, ShieldAlert } from 'lucide-react';
 import type { PacketDirection, PacketLogEntry, ProtocolState } from '../shared/types.ts';
+import { apiFetch } from '../hooks/useServerSocket.ts';
 
 interface PacketInspectorViewProps {
   packets: PacketLogEntry[];
@@ -28,11 +29,11 @@ export function PacketInspectorView({
   const clearPackets = async () => {
     onClearLocal();
     setSelectedPacket(null);
-    await fetch('/api/packets/clear', { method: 'POST' });
+    await apiFetch('/api/packets/clear', { method: 'POST' });
   };
 
   const testMalformed = async () => {
-    await fetch('/api/probe/malformed', { method: 'POST' });
+    await apiFetch('/api/probe/malformed', { method: 'POST' });
   };
 
   const filtered = useMemo(() => {

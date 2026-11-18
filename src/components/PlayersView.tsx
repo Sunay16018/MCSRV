@@ -11,6 +11,7 @@ import {
   Users,
 } from 'lucide-react';
 import type { BannedPlayer, PlayerInfo } from '../shared/types.ts';
+import { apiFetch } from '../hooks/useServerSocket.ts';
 
 interface PlayersViewProps {
   players: PlayerInfo[];
@@ -20,7 +21,8 @@ interface PlayersViewProps {
 
 export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
   const [selectedBot, setSelectedBot] = useState<string>('');
-  const [botChat, setBotChat] = useState('/fly');
+  const [spawnProtocol, setSpawnProtocol] = useState<number>(777);
+  const [botChat, setBotChat] = useState('/viabackwards');
   const [tpTarget, setTpTarget] = useState<{ username: string; x: string; y: string; z: string } | null>(null);
   const [spawning, setSpawning] = useState(false);
 
@@ -32,15 +34,19 @@ export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
   const spawnBot = async () => {
     setSpawning(true);
     try {
-      const res = await fetch('/api/probe/spawn', {
+      const res = await apiFetch('/api/probe/spawn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ protocolVersion: spawnProtocol }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Spawn failed');
       setSelectedBot(data.username);
-      onToast('success', 'Test Player Joined', `${data.username} connected via TCP Protocol 777.`);
+      onToast(
+        'success',
+        'Test Player Joined',
+        `${data.username} connected via TCP protocol ${data.protocolVersion}.`
+      );
     } catch (err) {
       onToast('error', 'Failed', (err as Error).message);
     } finally {
@@ -51,7 +57,7 @@ export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
   const sendBotAction = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!targetBotName || !botChat.trim()) return;
-    await fetch('/api/probe/chat', {
+    await apiFetch('/api/probe/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: targetBotName, message: botChat.trim() }),
@@ -60,7 +66,7 @@ export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
   };
 
   const stepMoveBot = async (username: string) => {
-    await fetch('/api/probe/move', {
+    await apiFetch('/api/probe/move', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, dx: 2.5, dy: 0, dz: -1.5 }),
@@ -68,7 +74,7 @@ export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
   };
 
   const toggleOp = async (player: PlayerInfo) => {
-    await fetch(`/api/players/${encodeURIComponent(player.username)}/op`, {
+    await apiFetch(`/api/players/${encodeURIComponent(player.username)}/op`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ op: !player.isOp }),
@@ -77,7 +83,7 @@ export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
   };
 
   const kickPlayer = async (player: PlayerInfo) => {
-    await fetch(`/api/players/${encodeURIComponent(player.username)}/kick`, {
+    await apiFetch(`/api/players/${encodeURIComponent(player.username)}/kick`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason: 'Kicked by Administrator' }),
@@ -86,7 +92,7 @@ export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
   };
 
   const banPlayer = async (player: PlayerInfo) => {
-    await fetch(`/api/players/${encodeURIComponent(player.username)}/ban`, {
+    await apiFetch(`/api/players/${encodeURIComponent(player.username)}/ban`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason: 'Banned by Administrator' }),
@@ -95,7 +101,7 @@ export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
   };
 
   const unbanPlayer = async (username: string) => {
-    await fetch('/api/players/unban', {
+    await apiFetch('/api/players/unban', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username }),
@@ -110,7 +116,7 @@ export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
     const y = Number(tpTarget.y);
     const z = Number(tpTarget.z);
     if ([x, y, z].some(Number.isNaN)) return;
-    await fetch(`/api/players/${encodeURIComponent(tpTarget.username)}/tp`, {
+    await apiFetch(`/api/players/${encodeURIComponent(tpTarget.username)}/tp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ x, y, z }),
@@ -127,17 +133,30 @@ export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
           <div>
             <h2 className="text-base font-semibold text-slate-100">Online Players</h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              {players.length} active connections · Real-time UUID, Ping, GameMode, and XYZ coordinate synchronization
+              {players.length} active connections · Supports Minecraft 1.21 – 26.3 via ViaBackwards
             </p>
           </div>
-          <button
-            onClick={spawnBot}
-            disabled={spawning}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <UserPlus className="w-3.5 h-3.5" />
-            {spawning ? 'Connecting...' : 'Spawn TCP Test Player'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={spawnProtocol}
+              onChange={(e) => setSpawnProtocol(Number(e.target.value))}
+              className="px-2.5 py-2 text-xs font-mono bg-[#0b0e14] border border-slate-800 rounded-md text-slate-200 focus:outline-none focus:border-emerald-500"
+            >
+              <option value={777}>26.3 (777 Native)</option>
+              <option value={775}>26.1 (775 Via)</option>
+              <option value={770}>1.21.5 (770 Via)</option>
+              <option value={769}>1.21.4 (769 Via)</option>
+              <option value={767}>1.21 (767 Via)</option>
+            </select>
+            <button
+              onClick={spawnBot}
+              disabled={spawning}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              {spawning ? 'Connecting...' : 'Spawn TCP Test Player'}
+            </button>
+          </div>
         </div>
 
         {activeBots.length > 0 && (
@@ -149,7 +168,7 @@ export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
             >
               {activeBots.map((b) => (
                 <option key={b.uuid} value={b.username}>
-                  {b.username}
+                  {b.username} ({b.clientVersionLabel})
                 </option>
               ))}
             </select>
@@ -157,7 +176,7 @@ export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
               type="text"
               value={botChat}
               onChange={(e) => setBotChat(e.target.value)}
-              placeholder="Send chat or /command as test player (e.g. /fly, /heal, /gamemode creative, Hello!)"
+              placeholder="Send chat or /command as test player (e.g. /fly, /viabackwards, /heal)"
               className="flex-1 min-w-60 px-3 py-1.5 text-xs font-mono bg-[#0b0e14] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
             />
             <button
@@ -220,7 +239,7 @@ export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
             <Users className="w-8 h-8 text-slate-600 mx-auto mb-3" />
             <div className="text-sm font-medium text-slate-300">No players currently online</div>
             <p className="text-xs text-slate-500 mt-1">
-              Connect a Minecraft 26.3 (Protocol 777) client to port 25565 or spawn a real TCP test player above.
+              Connect a Minecraft 1.21 – 26.3 client to port 25565 or spawn a TCP test player above.
             </p>
           </div>
         ) : (
@@ -246,7 +265,10 @@ export function PlayersView({ players, bans, onToast }: PlayersViewProps) {
                     <td className="py-3 px-4 font-mono">
                       <div className="text-slate-300 text-[11px]">{p.uuid}</div>
                       <div className="text-slate-500 text-[11px]">
-                        {p.clientVersionLabel} · Proto {p.protocolVersion}
+                        {p.clientVersionLabel} · Proto {p.protocolVersion} ·{' '}
+                        <span className={p.viaTranslated ? 'text-sky-400' : 'text-emerald-400'}>
+                          {p.viaTranslated ? 'ViaBackwards' : 'Native'}
+                        </span>
                       </div>
                     </td>
                     <td className="py-3 px-4">

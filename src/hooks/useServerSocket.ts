@@ -3,6 +3,7 @@ import type {
   BannedPlayer,
   ConsoleLog,
   MetricSample,
+  NetworkInfo,
   PacketLogEntry,
   PlayerInfo,
   PluginMetadata,
@@ -21,6 +22,8 @@ export interface ToastMessage {
 export interface ServerPanelState {
   connected: boolean;
   loading: boolean;
+  authRequired: boolean;
+  clientIp: string;
   metrics: ServerMetrics | null;
   history: MetricSample[];
   logs: ConsoleLog[];
@@ -29,13 +32,44 @@ export interface ServerPanelState {
   packets: PacketLogEntry[];
   plugins: PluginMetadata[];
   config: ServerConfig | null;
+  networkInfo: NetworkInfo | null;
   toasts: ToastMessage[];
+}
+
+const TOKEN_STORAGE_KEY = 'aethercore_panel_token';
+
+export function getStoredPanelToken(): string {
+  try {
+    return sessionStorage.getItem(TOKEN_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function setStoredPanelToken(token: string): void {
+  try {
+    if (token) sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+    else sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export async function apiFetch(input: string, init?: RequestInit): Promise<Response> {
+  const token = getStoredPanelToken();
+  const headers = new Headers(init?.headers || {});
+  if (token) {
+    headers.set('x-panel-token', token);
+  }
+  return fetch(input, { ...init, headers });
 }
 
 export function useServerSocket() {
   const [state, setState] = useState<ServerPanelState>({
     connected: false,
     loading: true,
+    authRequired: false,
+    clientIp: '127.0.0.1',
     metrics: null,
     history: [],
     logs: [],
@@ -44,9 +78,11 @@ export function useServerSocket() {
     packets: [],
     plugins: [],
     config: null,
+    networkInfo: null,
     toasts: [],
   });
 
+  const [authNonce, setAuthNonce] = useState(0);
   const packetPausedRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -84,17 +120,73 @@ export function useServerSocket() {
     setState((prev) => ({ ...prev, logs: [] }));
   }, []);
 
+  const refreshNetworkInfo = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/network-info');
+      if (res.ok) {
+        const netData = (await res.json()) as NetworkInfo;
+        setState((prev) => ({ ...prev, networkInfo: netData }));
+      }
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  const unlockWithToken = useCallback(async (token: string): Promise<boolean> => {
+    const res = await fetch('/api/auth/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    if (!res.ok) return false;
+    setStoredPanelToken(token);
+    setState((prev) => ({ ...prev, authRequired: false, loading: true }));
+    setAuthNonce((n) => n + 1);
+    return true;
+  }, []);
+
   useEffect(() => {
     let unmounted = false;
 
-    // Initial HTTP hydration for instant first paint
-    fetch('/api/state')
-      .then((r) => r.json())
-      .then((data) => {
+    const initConnection = async () => {
+      try {
+        const authRes = await apiFetch('/api/auth/status');
+        const authData = (await authRes.json()) as {
+          protected: boolean;
+          authorized: boolean;
+          clientIp: string;
+        };
+
         if (unmounted) return;
+        if (authData.protected && !authData.authorized) {
+          setState((prev) => ({
+            ...prev,
+            loading: false,
+            authRequired: true,
+            clientIp: authData.clientIp,
+          }));
+          return;
+        }
+
+        const [stateRes, netRes] = await Promise.all([
+          apiFetch('/api/state'),
+          apiFetch('/api/network-info'),
+        ]);
+
+        if (unmounted) return;
+        if (stateRes.status === 401) {
+          setState((prev) => ({ ...prev, loading: false, authRequired: true }));
+          return;
+        }
+
+        const data = await stateRes.json();
+        const netData = netRes.ok ? ((await netRes.json()) as NetworkInfo) : null;
+
         setState((prev) => ({
           ...prev,
           loading: false,
+          authRequired: false,
+          clientIp: authData.clientIp,
           metrics: data.metrics,
           history: data.history ?? [],
           logs: data.logs ?? [],
@@ -103,16 +195,23 @@ export function useServerSocket() {
           packets: data.packets ?? [],
           plugins: data.plugins ?? [],
           config: data.config ?? null,
+          networkInfo: netData,
         }));
-      })
-      .catch(() => {
+      } catch {
         if (!unmounted) setState((prev) => ({ ...prev, loading: false }));
-      });
+      }
+    };
+
+    void initConnection();
 
     const connectWs = () => {
       if (unmounted) return;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+      const token = getStoredPanelToken();
+      const wsUrl = token
+        ? `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`
+        : `${protocol}//${window.location.host}/ws`;
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -171,6 +270,7 @@ export function useServerSocket() {
               break;
             case 'config':
               setState((prev) => ({ ...prev, config: msg.payload }));
+              void refreshNetworkInfo();
               break;
             case 'toast':
               pushToast(msg.payload.level, msg.payload.title, msg.payload.message);
@@ -181,9 +281,10 @@ export function useServerSocket() {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (evt) => {
         if (unmounted) return;
         setState((prev) => ({ ...prev, connected: false }));
+        if (evt.code === 1008) return; // Auth rejected
         reconnectTimerRef.current = setTimeout(connectWs, 1500);
       };
     };
@@ -195,7 +296,7 @@ export function useServerSocket() {
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       wsRef.current?.close();
     };
-  }, [pushToast]);
+  }, [pushToast, refreshNetworkInfo, authNonce]);
 
   return {
     ...state,
@@ -204,5 +305,7 @@ export function useServerSocket() {
     setPacketsPaused,
     clearPacketsLocal,
     clearLogsLocal,
+    unlockWithToken,
+    refreshNetworkInfo,
   };
 }

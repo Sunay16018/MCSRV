@@ -92,8 +92,12 @@ export async function runRealStatusProbe(port: number): Promise<StatusProbeResul
   });
 }
 
-// Opens a genuine TCP connection speaking Protocol 777 through Login -> Config -> Play
-export async function spawnRealProtocolBot(port: number, username: string): Promise<string> {
+// Opens a genuine TCP connection speaking Protocol 767-777 through Login -> Config -> Play
+export async function spawnRealProtocolBot(
+  port: number,
+  username: string,
+  protocolVersion: number = PRIMARY_PROTOCOL_VERSION
+): Promise<string> {
   if (activeBots.has(username)) {
     throw new Error(`Test client "${username}" is already connected`);
   }
@@ -116,7 +120,7 @@ export async function spawnRealProtocolBot(port: number, username: string): Prom
 
     socket.on('connect', () => {
       const hs = new PacketWriter()
-        .writeVarInt(PRIMARY_PROTOCOL_VERSION)
+        .writeVarInt(protocolVersion)
         .writeString('aetherprobe.local')
         .writeUShort(port)
         .writeVarInt(2)
@@ -177,7 +181,7 @@ export async function spawnRealProtocolBot(port: number, username: string): Prom
               resolve(username);
             }
           } else if (session.state === 'PLAY') {
-            if (pkt.packetId === 0x26) {
+            if (pkt.packetId === 0x26 || pkt.packetId === 0x27) {
               // Reply to Keep Alive
               const keepId = reader.readLong();
               const pong = new PacketWriter().writeLong(keepId).toBuffer();
@@ -192,6 +196,10 @@ export async function spawnRealProtocolBot(port: number, username: string): Prom
 
     socket.on('close', () => {
       activeBots.delete(username);
+      if (session.state !== 'PLAY') {
+        clearTimeout(timeout);
+        reject(new Error('Connection closed by server before entering Play state'));
+      }
     });
 
     socket.on('error', (err) => {

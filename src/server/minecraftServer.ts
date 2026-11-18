@@ -1,3 +1,4 @@
+import os from 'os';
 import net from 'net';
 import path from 'path';
 import { EventEmitter } from 'events';
@@ -30,8 +31,10 @@ import {
   PRIMARY_MINECRAFT_VERSION,
   PRIMARY_PROTOCOL_VERSION,
   ProtocolMapper,
+  SUPPORTED_RANGE_LABEL,
   type ProtocolProfile,
 } from './protocol/mapper.ts';
+import { ConnectionRateLimiter, normalizeIp } from './security.ts';
 import { WorldEngine } from './world/chunkGenerator.ts';
 import { PluginManager } from './plugins/pluginManager.ts';
 import type { PluginPlayer } from './plugins/pluginApi.ts';
@@ -91,16 +94,18 @@ export class MinecraftServerEngine extends EventEmitter {
   private tps = 20.0;
   private mspt = 0.4;
   private ramUsedMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
-  private ramTotalMb = Math.round(process.memoryUsage().heapTotal / (1024 * 1024));
+  private ramTotalMb = Math.round(os.totalmem() / (1024 * 1024));
   private cpuPercent = 0.5;
   private tickCount = 0;
   private totalPacketsIn = 0;
   private totalPacketsOut = 0;
   private droppedPackets = 0;
+  private blockedConnections = 0;
   private errorMessage: string | undefined;
 
   public readonly world = new WorldEngine();
   public readonly pluginManager: PluginManager;
+  private readonly rateLimiter = new ConnectionRateLimiter();
 
   constructor() {
     super();
@@ -347,6 +352,16 @@ export class MinecraftServerEngine extends EventEmitter {
 
   private handleSocketOpen(socket: TcpSocketAdapter): ClientConnection {
     const id = `conn_${this.nextConnSeq++}`;
+    const cleanIp = normalizeIp(socket.remoteAddress);
+    let activeFromIp = 0;
+    for (const c of this.connections.values()) {
+      if (!c.closed && normalizeIp(c.socket.remoteAddress) === cleanIp) {
+        activeFromIp++;
+      }
+    }
+
+    const check = this.rateLimiter.checkAllowed(cleanIp, activeFromIp, this.config.security);
+
     const conn: ClientConnection = {
       id,
       socket,
@@ -358,6 +373,15 @@ export class MinecraftServerEngine extends EventEmitter {
       closed: false,
       processingQueue: Promise.resolve(),
     };
+
+    if (!check.allowed) {
+      this.blockedConnections++;
+      this.log('Security', `Blocked TCP connection from ${cleanIp}: ${check.reason}`, 'WARN');
+      conn.closed = true;
+      socket.end();
+      return conn;
+    }
+
     this.connections.set(id, conn);
     return conn;
   }
@@ -484,9 +508,21 @@ export class MinecraftServerEngine extends EventEmitter {
           conn.state = 'STATUS';
         } else if (nextState === 2 || nextState === 3) {
           if (!ProtocolMapper.isSupported(protocolVersion)) {
+            conn.state = 'LOGIN';
             this.disconnectConnection(
               conn,
-              `Unsupported protocol ${protocolVersion}. AetherCore targets Minecraft ${PRIMARY_MINECRAFT_VERSION} (Protocol ${PRIMARY_PROTOCOL_VERSION}).`
+              `Unsupported protocol ${protocolVersion}. Supported versions: ${SUPPORTED_RANGE_LABEL} (Protocols 767-777).`
+            );
+            return;
+          }
+          const viaActive = this.pluginManager
+            .getMetadataList()
+            .some((p) => p.name === 'ViaBackwards' && p.enabled);
+          if (protocolVersion !== PRIMARY_PROTOCOL_VERSION && !viaActive) {
+            conn.state = 'LOGIN';
+            this.disconnectConnection(
+              conn,
+              `Outdated client (${conn.profile.label}). Enable ViaBackwards plugin to join with ${SUPPORTED_RANGE_LABEL}.`
             );
             return;
           }
@@ -570,11 +606,14 @@ export class MinecraftServerEngine extends EventEmitter {
           conn.compressionThreshold = this.config.compressionThreshold;
         }
 
-        // 2. Send Login Success (UUID + Username + 0 properties + strictErrorHandling boolean)
+        // 2. Send Login Success (UUID + Username + 0 properties + optional strictErrorHandling for 1.21)
         const successWriter = new PacketWriter()
           .writeUUID(resolvedUuid)
           .writeString(username)
           .writeVarInt(0);
+        if (conn.profile.hasStrictLoginSuccessFlag) {
+          successWriter.writeBoolean(false);
+        }
         this.sendPacket(conn, conn.profile.clientbound.LOGIN.login_success, successWriter.toBuffer());
         this.log('Login', `${username} (${resolvedUuid}) authenticated via ${conn.profile.label}`, 'INFO');
       } else if (packetId === 0x03) {
@@ -764,6 +803,7 @@ export class MinecraftServerEngine extends EventEmitter {
       ip: conn.socket.remoteAddress,
       protocolVersion: conn.profile.protocolVersion,
       clientVersionLabel: conn.profile.label,
+      viaTranslated: conn.profile.viaTranslated,
       ping: 12,
       x: 0.5,
       y: 64.0,
@@ -823,7 +863,7 @@ export class MinecraftServerEngine extends EventEmitter {
     const radius = Math.min(3, this.config.viewDistance);
     for (let cx = -radius; cx <= radius; cx++) {
       for (let cz = -radius; cz <= radius; cz++) {
-        const chunkPayload = this.world.buildChunkPacketPayload(cx, cz);
+        const chunkPayload = this.world.buildChunkPacketPayload(cx, cz, conn.profile.usesFlatHeightmaps);
         this.sendPacket(conn, conn.profile.clientbound.PLAY.level_chunk_with_light, chunkPayload);
       }
     }
@@ -1376,6 +1416,7 @@ export class MinecraftServerEngine extends EventEmitter {
       runtimeVersion: bunGlobal ? bunGlobal.version : process.version,
       protocolVersion: PRIMARY_PROTOCOL_VERSION,
       minecraftVersion: PRIMARY_MINECRAFT_VERSION,
+      supportedVersions: SUPPORTED_RANGE_LABEL,
       port: this.config.port,
       uptimeMs: this.status === 'running' && this.startedAt > 0 ? Date.now() - this.startedAt : 0,
       tps: this.status === 'running' ? this.tps : 0,
@@ -1388,6 +1429,7 @@ export class MinecraftServerEngine extends EventEmitter {
       totalPacketsIn: this.totalPacketsIn,
       totalPacketsOut: this.totalPacketsOut,
       droppedPackets: this.droppedPackets,
+      blockedConnections: this.blockedConnections,
       tickCount: this.tickCount,
       workerActive: Boolean(this.worker),
       errorMessage: this.errorMessage,

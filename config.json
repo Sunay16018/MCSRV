@@ -1,5 +1,5 @@
 {
-  "motd": "AetherCore 26.3 — High-Speed Bun Minecraft Engine",
+  "motd": "AetherCore 26.3 — High-Speed Bun Minecraft Engine (1.21-26.3)",
   "port": 25565,
   "maxPlayers": 50,
   "viewDistance": 6,
@@ -10,5 +10,15 @@
   "onlineMode": false,
   "maxPacketSize": 2097152,
   "worldType": "superflat",
-  "spawnProtection": true
+  "spawnProtection": true,
+  "publicHost": "",
+  "security": {
+    "ipWhitelistEnabled": false,
+    "enforceMinecraftIpWhitelist": false,
+    "allowedIps": ["127.0.0.1", "::1"],
+    "protectWebPanel": false,
+    "panelAccessToken": "",
+    "maxConnectionsPerIp": 5,
+    "maxHandshakesPerMinute": 40
+  }
 }

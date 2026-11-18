@@ -1,3 +1,5 @@
+import os from 'os';
+
 // Dedicated 20 TPS (50ms) precision game tick loop Worker
 // Runs off the main TCP socket I/O thread to guarantee zero-jitter tick timing.
 
@@ -62,7 +64,7 @@ function stepTick(): void {
       tps: Number(tps.toFixed(2)),
       mspt: Number(avgMspt.toFixed(2)),
       ramUsedMb: Math.round(mem.rss / (1024 * 1024)),
-      ramTotalMb: Math.round(mem.heapTotal / (1024 * 1024)),
+      ramTotalMb: Math.round(os.totalmem() / (1024 * 1024)),
       cpuPercent: Number(cpuPercent.toFixed(1)),
       tickCount,
     };

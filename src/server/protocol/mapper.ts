@@ -2,11 +2,17 @@ import type { ProtocolState } from '../../shared/types.ts';
 
 export const PRIMARY_PROTOCOL_VERSION = 777;
 export const PRIMARY_MINECRAFT_VERSION = '26.3';
+export const MIN_SUPPORTED_PROTOCOL = 767; // Minecraft 1.21
+export const MAX_SUPPORTED_PROTOCOL = 777; // Minecraft 26.3
+export const SUPPORTED_RANGE_LABEL = '1.21 – 26.3';
 
 export interface ProtocolProfile {
   protocolVersion: number;
   label: string;
   isNative777: boolean;
+  viaTranslated: boolean;
+  usesFlatHeightmaps: boolean; // >= 770 (1.21.5+) uses flat arrays instead of NBT heightmaps
+  hasStrictLoginSuccessFlag: boolean; // 767 (1.21/1.21.1) includes trailing strictErrorHandling boolean
   serverbound: {
     CONFIGURATION: Record<number, string>;
     PLAY: Record<number, string>;
@@ -39,6 +45,20 @@ const PLAY_SERVERBOUND_777: Record<number, string> = {
   0x36: 'swing',
   0x38: 'use_item_on',
   0x39: 'use_item',
+};
+
+// Serverbound Play IDs for 1.21 / 1.21.1 (Protocol 767)
+const PLAY_SERVERBOUND_767: Record<number, string> = {
+  ...PLAY_SERVERBOUND_777,
+  0x04: 'chat_command',
+  0x05: 'chat_command_signed',
+  0x06: 'chat',
+  0x18: 'keep_alive',
+  0x1a: 'move_player_pos',
+  0x1b: 'move_player_pos_rot',
+  0x1c: 'move_player_rot',
+  0x24: 'player_action',
+  0x38: 'use_item_on',
 };
 
 const PLAY_CLIENTBOUND_777: Record<string, number> = {
@@ -85,40 +105,64 @@ const CONFIG_CLIENTBOUND_777: Record<string, number> = {
   select_known_packs: 0x0e,
 };
 
-// Backwards-compatible mapping adjustments for 1.20.4 - 1.21.x clients
-const SUPPORTED_VERSIONS: Record<number, string> = {
+export const SUPPORTED_VERSIONS: Record<number, string> = {
   777: '26.3',
   776: '26.2',
   775: '26.1',
+  774: '1.21.11',
+  773: '1.21.9',
+  772: '1.21.7',
+  771: '1.21.6',
   770: '1.21.5',
   769: '1.21.4',
-  768: '1.21.2',
-  767: '1.21',
-  766: '1.20.6',
-  765: '1.20.4',
+  768: '1.21.2 / 1.21.3',
+  767: '1.21 / 1.21.1',
 };
 
 export class ProtocolMapper {
   public static resolveProfile(clientProtocol: number): ProtocolProfile {
-    const label = SUPPORTED_VERSIONS[clientProtocol] ?? `Compat-${clientProtocol}`;
+    const label = SUPPORTED_VERSIONS[clientProtocol] ?? `Proto-${clientProtocol}`;
     const isNative777 = clientProtocol === PRIMARY_PROTOCOL_VERSION;
+    const viaTranslated = !isNative777 && this.isSupported(clientProtocol);
 
-    // Slight packet ID differences for older 1.20.4 (765) vs 1.21+ / 26.3 (777)
     const playClientbound = { ...PLAY_CLIENTBOUND_777 };
-    if (clientProtocol <= 765) {
-      playClientbound.login_play = 0x29;
-      playClientbound.keep_alive = 0x24;
-      playClientbound.level_chunk_with_light = 0x25;
-      playClientbound.player_position = 0x3e;
+    const playServerbound = clientProtocol === 767 ? { ...PLAY_SERVERBOUND_767 } : { ...PLAY_SERVERBOUND_777 };
+
+    // ViaBackwards clientbound packet ID adjustments for 1.21 (767) - 1.21.4 (769)
+    if (clientProtocol === 767) {
+      playClientbound.block_update = 0x09;
+      playClientbound.disconnect_play = 0x1d;
+      playClientbound.game_event = 0x22;
+      playClientbound.keep_alive = 0x26;
+      playClientbound.level_chunk_with_light = 0x27;
+      playClientbound.login_play = 0x2b;
+      playClientbound.player_abilities = 0x38;
+      playClientbound.player_info_remove = 0x3d;
+      playClientbound.player_info_update = 0x3e;
+      playClientbound.player_position = 0x40;
+      playClientbound.remove_entities = 0x42;
+      playClientbound.set_chunk_cache_center = 0x54;
+      playClientbound.set_default_spawn_position = 0x56;
+      playClientbound.set_health = 0x5d;
+      playClientbound.chat_system = 0x6c;
+    } else if (clientProtocol === 768 || clientProtocol === 769) {
+      playClientbound.login_play = 0x2c;
+      playClientbound.keep_alive = 0x27;
+      playClientbound.level_chunk_with_light = 0x28;
+      playClientbound.player_position = 0x42;
+      playClientbound.chat_system = 0x73;
     }
 
     return {
       protocolVersion: clientProtocol,
       label,
       isNative777,
+      viaTranslated,
+      usesFlatHeightmaps: clientProtocol >= 770,
+      hasStrictLoginSuccessFlag: clientProtocol === 767,
       serverbound: {
         CONFIGURATION: { ...CONFIG_SERVERBOUND_777 },
-        PLAY: { ...PLAY_SERVERBOUND_777 },
+        PLAY: playServerbound,
       },
       clientbound: {
         LOGIN: {
@@ -134,7 +178,7 @@ export class ProtocolMapper {
   }
 
   public static isSupported(protocolVersion: number): boolean {
-    return protocolVersion >= 763 && protocolVersion <= 790;
+    return protocolVersion >= MIN_SUPPORTED_PROTOCOL && protocolVersion <= MAX_SUPPORTED_PROTOCOL;
   }
 
   public static getServerboundName(state: ProtocolState, packetId: number, profile: ProtocolProfile): string {

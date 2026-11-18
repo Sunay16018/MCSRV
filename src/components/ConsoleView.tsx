@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, Eraser, Search, Send } from 'lucide-react';
 import type { ConsoleLog, LogLevel } from '../shared/types.ts';
+import { apiFetch } from '../hooks/useServerSocket.ts';
 
 interface ConsoleViewProps {
   logs: ConsoleLog[];
@@ -63,7 +64,7 @@ export function ConsoleView({ logs, onClearLocal }: ConsoleViewProps) {
     setCommandInput('');
 
     try {
-      await fetch('/api/console/command', {
+      await apiFetch('/api/console/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command: trimmed }),

@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import {
   Activity,
+  Check,
+  Copy,
   Cpu,
+  Globe,
   HardDrive,
   Play,
   Radio,
@@ -12,12 +15,14 @@ import {
   Users,
   Wifi,
 } from 'lucide-react';
-import type { MetricSample, ServerConfig, ServerMetrics } from '../shared/types.ts';
+import type { MetricSample, NetworkInfo, ServerConfig, ServerMetrics } from '../shared/types.ts';
+import { apiFetch } from '../hooks/useServerSocket.ts';
 
 interface DashboardViewProps {
   metrics: ServerMetrics | null;
   history: MetricSample[];
   config: ServerConfig | null;
+  networkInfo: NetworkInfo | null;
   onServerAction: (action: 'start' | 'stop' | 'restart') => Promise<void>;
   onToast: (level: 'success' | 'warn' | 'error', title: string, message: string) => void;
 }
@@ -123,7 +128,6 @@ function TelemetrySvgChart({
         role="img"
         aria-label={label}
       >
-        {/* Horizontal grid lines */}
         {[0, 0.25, 0.5, 0.75, 1].map((t) => {
           const y = padY + plotH * t;
           return (
@@ -160,10 +164,13 @@ export function DashboardView({
   metrics,
   history,
   config,
+  networkInfo,
   onServerAction,
   onToast,
 }: DashboardViewProps) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [copiedIp, setCopiedIp] = useState(false);
+  const [probeProtocol, setProbeProtocol] = useState<number>(777);
   const [probeStatusResult, setProbeStatusResult] = useState<{
     motd: string;
     versionName: string;
@@ -174,6 +181,18 @@ export function DashboardView({
   } | null>(null);
 
   const isRunning = metrics?.status === 'running';
+  const connectAddr = networkInfo?.connectAddress ?? `127.0.0.1:${metrics?.port ?? 25565}`;
+
+  const copyConnectAddress = async () => {
+    try {
+      await navigator.clipboard.writeText(connectAddr);
+      setCopiedIp(true);
+      onToast('success', 'Server Address Copied', `${connectAddr} copied to clipboard.`);
+      setTimeout(() => setCopiedIp(false), 2000);
+    } catch {
+      onToast('warn', 'Copy Manually', connectAddr);
+    }
+  };
 
   const triggerAction = async (action: 'start' | 'stop' | 'restart') => {
     setBusyAction(action);
@@ -187,7 +206,7 @@ export function DashboardView({
   const runStatusPing = async () => {
     setBusyAction('ping');
     try {
-      const res = await fetch('/api/probe/status', { method: 'POST' });
+      const res = await apiFetch('/api/probe/status', { method: 'POST' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Ping failed');
       setProbeStatusResult(data.result);
@@ -206,17 +225,17 @@ export function DashboardView({
   const spawnProbePlayer = async () => {
     setBusyAction('spawn');
     try {
-      const res = await fetch('/api/probe/spawn', {
+      const res = await apiFetch('/api/probe/spawn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ protocolVersion: probeProtocol }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to spawn test player');
       onToast(
         'success',
         'Test Player Connected',
-        `${data.username} completed Protocol 777 Login -> Configuration -> Play over TCP`
+        `${data.username} joined on protocol ${data.protocolVersion} (Login -> Config -> Play)`
       );
     } catch (err) {
       onToast('error', 'Test Client Failed', (err as Error).message);
@@ -228,7 +247,7 @@ export function DashboardView({
   const testMalformedShield = async () => {
     setBusyAction('shield');
     try {
-      await fetch('/api/probe/malformed', { method: 'POST' });
+      await apiFetch('/api/probe/malformed', { method: 'POST' });
       onToast(
         'warn',
         'Crash-Proof Shield Tested',
@@ -252,6 +271,66 @@ export function DashboardView({
 
   return (
     <div className="space-y-6">
+      {/* Direct Minecraft Server Address Banner */}
+      <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-5 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-start gap-3.5 min-w-0">
+          <Globe className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <div className="text-xs text-slate-400">
+              Minecraft Server Address · Supported Versions {metrics?.supportedVersions ?? '1.21 – 26.3'} (ViaBackwards)
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-3">
+              <span className="text-lg sm:text-xl font-mono font-semibold text-slate-100 tabular-nums truncate">
+                {connectAddr}
+              </span>
+              <button
+                onClick={copyConnectAddress}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                {copiedIp ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedIp ? 'Copied' : 'Copy IP'}
+              </button>
+            </div>
+            <div className="mt-1.5 text-xs text-slate-400">
+              {networkInfo?.isCloudContainer
+                ? 'Running inside an HTTP/HTTPS cloud container — internal TCP 25565 is active for panel probes; deploy to AWS EC2/Lightsail (open TCP 25565 to your IP) for external Minecraft launcher connections.'
+                : `Your IP: ${networkInfo?.clientIp ?? '127.0.0.1'} · TCP ${metrics?.port ?? 25565} listening on 0.0.0.0 · ${
+                    config?.security?.ipWhitelistEnabled && config?.security?.enforceMinecraftIpWhitelist
+                      ? `IP Whitelist Active (${config.security.allowedIps.length} rules)`
+                      : 'Open TCP Access'
+                  }`}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => triggerAction('start')}
+            disabled={isRunning || busyAction !== null}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:pointer-events-none text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Play className="w-3.5 h-3.5" />
+            Start
+          </button>
+          <button
+            onClick={() => triggerAction('restart')}
+            disabled={busyAction !== null}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <RotateCw className="w-3.5 h-3.5" />
+            Restart
+          </button>
+          <button
+            onClick={() => triggerAction('stop')}
+            disabled={!isRunning || busyAction !== null}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md text-xs font-medium bg-rose-950/60 hover:bg-rose-900/70 disabled:opacity-40 disabled:pointer-events-none text-rose-200 border border-rose-800/60 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Square className="w-3.5 h-3.5" />
+            Stop
+          </button>
+        </div>
+      </div>
+
       {/* Primary KPI Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-4">
@@ -276,7 +355,7 @@ export function DashboardView({
             {metrics?.ramUsedMb ?? 0} <span className="text-sm font-normal text-slate-400">MB</span>
           </div>
           <div className="mt-1 text-xs text-slate-500 font-mono tabular-nums">
-            Heap {metrics?.ramTotalMb ?? 0} MB allocated
+            System {metrics?.ramTotalMb ?? 0} MB total
           </div>
         </div>
 
@@ -357,14 +436,14 @@ export function DashboardView({
         />
       </div>
 
-      {/* Engine Control & Protocol 777 Live Probe */}
+      {/* Engine Telemetry & Protocol 1.21-26.3 Live Probe */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-5">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h3 className="text-sm font-semibold text-slate-100">Engine Lifecycle & Network</h3>
+              <h3 className="text-sm font-semibold text-slate-100">Engine & Shield Telemetry</h3>
               <p className="text-xs text-slate-400 mt-1">
-                Minecraft Java Edition {metrics?.minecraftVersion ?? '26.3'} · Protocol {metrics?.protocolVersion ?? 777} ·{' '}
+                Core {metrics?.minecraftVersion ?? '26.3'} (Proto {metrics?.protocolVersion ?? 777}) · ViaBackwards {metrics?.supportedVersions ?? '1.21 – 26.3'} ·{' '}
                 {metrics?.runtime === 'bun' ? `Bun v${metrics.runtimeVersion}` : `Node ${metrics?.runtimeVersion}`}
               </p>
             </div>
@@ -376,7 +455,7 @@ export function DashboardView({
             </div>
           </div>
 
-          <div className="mt-5 pt-4 border-t border-slate-800/80 grid grid-cols-3 gap-4 text-xs">
+          <div className="mt-5 pt-4 border-t border-slate-800/80 grid grid-cols-4 gap-4 text-xs">
             <div>
               <div className="text-slate-500">Packets In</div>
               <div className="mt-1 text-base font-mono font-semibold text-slate-100 tabular-nums">
@@ -395,60 +474,50 @@ export function DashboardView({
                 {(metrics?.droppedPackets ?? 0).toLocaleString()}
               </div>
             </div>
-          </div>
-
-          <div className="mt-5 flex flex-wrap items-center gap-2.5">
-            <button
-              onClick={() => triggerAction('start')}
-              disabled={isRunning || busyAction !== null}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:pointer-events-none text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Play className="w-3.5 h-3.5" />
-              Start Engine
-            </button>
-            <button
-              onClick={() => triggerAction('restart')}
-              disabled={busyAction !== null}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <RotateCw className="w-3.5 h-3.5" />
-              Restart Engine
-            </button>
-            <button
-              onClick={() => triggerAction('stop')}
-              disabled={!isRunning || busyAction !== null}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-xs font-medium bg-rose-950/60 hover:bg-rose-900/70 disabled:opacity-40 disabled:pointer-events-none text-rose-200 border border-rose-800/60 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Square className="w-3.5 h-3.5" />
-              Stop Engine
-            </button>
+            <div>
+              <div className="text-slate-500">Blocked IPs</div>
+              <div className="mt-1 text-base font-mono font-semibold text-rose-400 tabular-nums">
+                {(metrics?.blockedConnections ?? 0).toLocaleString()}
+              </div>
+            </div>
           </div>
         </div>
 
         <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-5">
           <div>
-            <h3 className="text-sm font-semibold text-slate-100">TCP Protocol 777 Live Verification</h3>
+            <h3 className="text-sm font-semibold text-slate-100">TCP Protocol & ViaBackwards Live Probe</h3>
             <p className="text-xs text-slate-400 mt-1">
-              Execute genuine TCP socket probes against port {metrics?.port ?? 25565} to test Status Ping, Login/Config/Play chunks, and the Crash-Proof Shield.
+              Test genuine TCP connections to 127.0.0.1:{metrics?.port ?? 25565} across 1.21–26.3 and verify the Crash-Proof Shield.
             </p>
           </div>
 
-          <div className="mt-5 flex flex-wrap items-center gap-2.5">
+          <div className="mt-4 flex flex-wrap items-center gap-2.5">
+            <select
+              value={probeProtocol}
+              onChange={(e) => setProbeProtocol(Number(e.target.value))}
+              className="px-2.5 py-2 text-xs font-mono bg-[#0b0e14] border border-slate-800 rounded-md text-slate-200 focus:outline-none focus:border-emerald-500"
+            >
+              <option value={777}>26.3 (Proto 777 Native)</option>
+              <option value={775}>26.1 (Proto 775 Via)</option>
+              <option value={770}>1.21.5 (Proto 770 Via)</option>
+              <option value={769}>1.21.4 (Proto 769 Via)</option>
+              <option value={767}>1.21 (Proto 767 Via)</option>
+            </select>
+            <button
+              onClick={spawnProbePlayer}
+              disabled={!isRunning || busyAction !== null}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              Connect Test Player
+            </button>
             <button
               onClick={runStatusPing}
               disabled={!isRunning || busyAction !== null}
               className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Radio className="w-3.5 h-3.5 text-emerald-400" />
-              Run Status Ping
-            </button>
-            <button
-              onClick={spawnProbePlayer}
-              disabled={!isRunning || busyAction !== null}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <UserPlus className="w-3.5 h-3.5 text-sky-400" />
-              Connect Test Player
+              Status Ping
             </button>
             <button
               onClick={testMalformedShield}
@@ -456,12 +525,12 @@ export function DashboardView({
               className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-              Send Malformed Packet
+              Shield Test
             </button>
           </div>
 
           {probeStatusResult ? (
-            <div className="mt-4 pt-4 border-t border-slate-800/80 text-xs space-y-1.5 font-mono">
+            <div className="mt-4 pt-3 border-t border-slate-800/80 text-xs space-y-1 font-mono">
               <div className="flex items-center justify-between text-slate-300">
                 <span>MOTD: {probeStatusResult.motd}</span>
                 <span className="text-emerald-400 tabular-nums">{probeStatusResult.rttMs} ms</span>
@@ -472,7 +541,7 @@ export function DashboardView({
               </div>
             </div>
           ) : (
-            <div className="mt-4 pt-4 border-t border-slate-800/80 text-xs text-slate-500">
+            <div className="mt-4 pt-3 border-t border-slate-800/80 text-xs text-slate-500">
               MOTD: {config?.motd ?? 'AetherCore 26.3'} · View Distance {config?.viewDistance ?? 6} chunks
             </div>
           )}

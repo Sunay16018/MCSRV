@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react';
-import { RotateCcw, Save } from 'lucide-react';
-import type { Difficulty, GameMode, ServerConfig } from '../shared/types.ts';
+import { Copy, KeyRound, Plus, RotateCcw, Save, ShieldCheck, Trash2 } from 'lucide-react';
+import type { Difficulty, GameMode, NetworkInfo, ServerConfig } from '../shared/types.ts';
+import { apiFetch, setStoredPanelToken } from '../hooks/useServerSocket.ts';
 
 interface SettingsViewProps {
   config: ServerConfig | null;
+  networkInfo: NetworkInfo | null;
   onToast: (level: 'success' | 'warn' | 'error', title: string, message: string) => void;
 }
 
-export function SettingsView({ config, onToast }: SettingsViewProps) {
+export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps) {
   const [form, setForm] = useState<ServerConfig | null>(config);
+  const [newIpInput, setNewIpInput] = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -27,7 +30,7 @@ export function SettingsView({ config, onToast }: SettingsViewProps) {
     e.preventDefault();
     setSaving(true);
     try {
-      const res = await fetch('/api/config', {
+      const res = await apiFetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
@@ -35,6 +38,9 @@ export function SettingsView({ config, onToast }: SettingsViewProps) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to save settings');
       setForm(data.config);
+      if (data.config?.security?.protectWebPanel && data.config?.security?.panelAccessToken) {
+        setStoredPanelToken(data.config.security.panelAccessToken);
+      }
       onToast('success', 'Settings Saved', 'config.json updated and applied to running engine.');
     } catch (err) {
       onToast('error', 'Save Failed', (err as Error).message);
@@ -43,14 +49,59 @@ export function SettingsView({ config, onToast }: SettingsViewProps) {
     }
   };
 
+  const addAllowedIp = (ip: string) => {
+    const clean = ip.trim();
+    if (!clean) return;
+    if (form.security.allowedIps.includes(clean)) return;
+    setForm({
+      ...form,
+      security: {
+        ...form.security,
+        allowedIps: [...form.security.allowedIps, clean],
+      },
+    });
+    setNewIpInput('');
+  };
+
+  const removeAllowedIp = (ip: string) => {
+    setForm({
+      ...form,
+      security: {
+        ...form.security,
+        allowedIps: form.security.allowedIps.filter((item) => item !== ip),
+      },
+    });
+  };
+
+  const generateToken = () => {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    setForm({
+      ...form,
+      security: {
+        ...form.security,
+        protectWebPanel: true,
+        panelAccessToken: hex,
+      },
+    });
+  };
+
+  const copyToken = async () => {
+    if (!form.security.panelAccessToken) return;
+    await navigator.clipboard.writeText(form.security.panelAccessToken);
+    onToast('success', 'Access Token Copied', 'Save this token before closing the panel.');
+  };
+
   return (
     <form onSubmit={handleSubmit} className="max-w-4xl space-y-6">
+      {/* Core Gameplay & Network Config */}
       <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-6 space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
           <div>
             <h2 className="text-base font-semibold text-slate-100">Server Configuration (config.json)</h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Changes persist directly to disk and apply immediately to Protocol 777 status responses and gameplay.
+              Changes persist directly to disk and apply immediately to 1.21–26.3 status responses and gameplay.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -81,6 +132,19 @@ export function SettingsView({ config, onToast }: SettingsViewProps) {
               value={form.motd}
               onChange={(e) => setForm({ ...form, motd: e.target.value })}
               className="w-full px-3 py-2 bg-[#0b0e14] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="block font-medium text-slate-300 mb-1.5">
+              AWS Public IP / Domain Override (shown on Dashboard)
+            </label>
+            <input
+              type="text"
+              value={form.publicHost}
+              onChange={(e) => setForm({ ...form, publicHost: e.target.value })}
+              placeholder={`Auto-detected (${networkInfo?.detectedIp ?? '127.0.0.1'}) — e.g. 54.123.45.67 or play.yourdomain.com`}
+              className="w-full px-3 py-2 font-mono bg-[#0b0e14] border border-slate-800 rounded-md text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-emerald-500"
             />
           </div>
 
@@ -220,6 +284,186 @@ export function SettingsView({ config, onToast }: SettingsViewProps) {
               />
               Spawn Protection
             </label>
+          </div>
+        </div>
+      </div>
+
+      {/* AWS Firewall, IP Allowlist & Panel Auth Hardening */}
+      <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-6 space-y-5">
+        <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-800/80">
+          <div className="flex items-start gap-2.5">
+            <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+            <div>
+              <h3 className="text-base font-semibold text-slate-100">AWS Security & IP Allowlist</h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Restrict web panel & Minecraft port {form.port} to your own IP/CIDR and protect API/WebSocket routes with an access token.
+              </p>
+            </div>
+          </div>
+          {networkInfo?.clientIp && (
+            <button
+              type="button"
+              onClick={() => addAllowedIp(networkInfo.clientIp)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add My IP ({networkInfo.clientIp})
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs">
+          <div className="space-y-2.5 md:col-span-2">
+            <label className="inline-flex items-center gap-2.5 cursor-pointer text-slate-200">
+              <input
+                type="checkbox"
+                checked={form.security.ipWhitelistEnabled}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    security: { ...form.security, ipWhitelistEnabled: e.target.checked },
+                  })
+                }
+                className="rounded border-slate-700 bg-[#0b0e14] text-emerald-500"
+              />
+              Enforce IP Allowlist on Web Control Panel (Port 3000)
+            </label>
+
+            <div>
+              <label className="inline-flex items-center gap-2.5 cursor-pointer text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={form.security.enforceMinecraftIpWhitelist}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      security: { ...form.security, enforceMinecraftIpWhitelist: e.target.checked },
+                    })
+                  }
+                  className="rounded border-slate-700 bg-[#0b0e14] text-emerald-500"
+                />
+                Enforce IP Allowlist on Minecraft TCP Server (Port {form.port})
+              </label>
+            </div>
+          </div>
+
+          <div className="md:col-span-2 space-y-2">
+            <label className="block font-medium text-slate-300">
+              Allowed IPs & CIDR Ranges (127.0.0.1 is always permitted locally)
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newIpInput}
+                onChange={(e) => setNewIpInput(e.target.value)}
+                placeholder="e.g. 203.0.113.45 or 203.0.113.0/24"
+                className="flex-1 px-3 py-2 font-mono bg-[#0b0e14] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
+              />
+              <button
+                type="button"
+                onClick={() => addAllowedIp(newIpInput)}
+                className="px-3.5 py-2 rounded-md font-medium bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                Add Rule
+              </button>
+            </div>
+            <div className="divide-y divide-slate-800/60 border border-slate-800/80 rounded-md bg-[#0b0e14]">
+              {form.security.allowedIps.map((ip) => (
+                <div key={ip} className="px-3 py-2 flex items-center justify-between font-mono text-slate-200">
+                  <span>{ip}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeAllowedIp(ip)}
+                    className="text-slate-500 hover:text-rose-400 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="md:col-span-2 pt-2 border-t border-slate-800/80 space-y-3">
+            <label className="inline-flex items-center gap-2.5 cursor-pointer text-slate-200">
+              <input
+                type="checkbox"
+                checked={form.security.protectWebPanel}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    security: { ...form.security, protectWebPanel: e.target.checked },
+                  })
+                }
+                className="rounded border-slate-700 bg-[#0b0e14] text-emerald-500"
+              />
+              Require Panel Access Token for Web UI & WebSocket (Recommended for AWS)
+            </label>
+
+            <div className="flex flex-wrap gap-2">
+              <input
+                type="text"
+                value={form.security.panelAccessToken}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    security: { ...form.security, panelAccessToken: e.target.value },
+                  })
+                }
+                placeholder="Click Generate Token or enter custom secret key..."
+                className="flex-1 min-w-60 px-3 py-2 font-mono bg-[#0b0e14] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
+              />
+              <button
+                type="button"
+                onClick={generateToken}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md font-medium bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+                Generate Token
+              </button>
+              <button
+                type="button"
+                onClick={copyToken}
+                disabled={!form.security.panelAccessToken}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                Copy
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block font-medium text-slate-300 mb-1.5">Max Concurrent TCP Connections / IP</label>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={form.security.maxConnectionsPerIp}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  security: { ...form.security, maxConnectionsPerIp: Number(e.target.value) },
+                })
+              }
+              className="w-full px-3 py-2 font-mono tabular-nums bg-[#0b0e14] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+
+          <div>
+            <label className="block font-medium text-slate-300 mb-1.5">Max Handshakes / Minute / IP (Anti-Flood)</label>
+            <input
+              type="number"
+              min={5}
+              max={600}
+              value={form.security.maxHandshakesPerMinute}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  security: { ...form.security, maxHandshakesPerMinute: Number(e.target.value) },
+                })
+              }
+              className="w-full px-3 py-2 font-mono tabular-nums bg-[#0b0e14] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
+            />
           </div>
         </div>
       </div>

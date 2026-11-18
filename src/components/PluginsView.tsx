@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Code2, Plus, Power, RefreshCw } from 'lucide-react';
 import type { PluginMetadata } from '../shared/types.ts';
+import { apiFetch } from '../hooks/useServerSocket.ts';
 
 interface PluginsViewProps {
   plugins: PluginMetadata[];
@@ -16,7 +17,7 @@ export function PluginsView({ plugins, onEditFile, onToast }: PluginsViewProps) 
   const reloadAll = async () => {
     setBusyId('ALL');
     try {
-      const res = await fetch('/api/plugins/reload-all', { method: 'POST' });
+      const res = await apiFetch('/api/plugins/reload-all', { method: 'POST' });
       if (!res.ok) throw new Error('Reload failed');
       onToast('success', 'Plugins Reloaded', 'All plugins reloaded cleanly in memory.');
     } catch (err) {
@@ -29,7 +30,7 @@ export function PluginsView({ plugins, onEditFile, onToast }: PluginsViewProps) 
   const reloadOne = async (plugin: PluginMetadata) => {
     setBusyId(plugin.id);
     try {
-      const res = await fetch(`/api/plugins/${encodeURIComponent(plugin.id)}/reload`, { method: 'POST' });
+      const res = await apiFetch(`/api/plugins/${encodeURIComponent(plugin.id)}/reload`, { method: 'POST' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Reload failed');
       onToast(
@@ -47,7 +48,7 @@ export function PluginsView({ plugins, onEditFile, onToast }: PluginsViewProps) 
   const togglePlugin = async (plugin: PluginMetadata) => {
     setBusyId(plugin.id);
     try {
-      const res = await fetch(`/api/plugins/${encodeURIComponent(plugin.id)}/toggle`, {
+      const res = await apiFetch(`/api/plugins/${encodeURIComponent(plugin.id)}/toggle`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: !plugin.enabled }),
@@ -70,7 +71,7 @@ export function PluginsView({ plugins, onEditFile, onToast }: PluginsViewProps) 
     if (!newName.trim()) return;
     setBusyId('CREATE');
     try {
-      const res = await fetch('/api/plugins/create', {
+      const res = await apiFetch('/api/plugins/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newName.trim() }),

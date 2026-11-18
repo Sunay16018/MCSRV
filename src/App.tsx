@@ -3,6 +3,7 @@ import {
   Activity,
   Box,
   FolderCode,
+  KeyRound,
   Menu,
   Network,
   Play,
@@ -14,7 +15,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { useServerSocket } from './hooks/useServerSocket.ts';
+import { apiFetch, useServerSocket } from './hooks/useServerSocket.ts';
 import { DashboardView } from './components/DashboardView.tsx';
 import { ConsoleView } from './components/ConsoleView.tsx';
 import { FilesView } from './components/FilesView.tsx';
@@ -46,10 +47,14 @@ export default function App() {
   const [activePage, setActivePage] = useState<PageId>('dashboard');
   const [ideFileTarget, setIdeFileTarget] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [tokenInput, setTokenInput] = useState('');
+  const [tokenError, setTokenError] = useState('');
 
   const {
     connected,
     loading,
+    authRequired,
+    clientIp,
     metrics,
     history,
     logs,
@@ -58,17 +63,19 @@ export default function App() {
     packets,
     plugins,
     config,
+    networkInfo,
     toasts,
     pushToast,
     dismissToast,
     setPacketsPaused,
     clearPacketsLocal,
     clearLogsLocal,
+    unlockWithToken,
   } = useServerSocket();
 
   const handleServerAction = async (action: 'start' | 'stop' | 'restart') => {
     try {
-      const res = await fetch(`/api/server/${action}`, { method: 'POST' });
+      const res = await apiFetch(`/api/server/${action}`, { method: 'POST' });
       if (!res.ok) throw new Error(`Failed to ${action} server`);
       pushToast(
         'success',
@@ -80,10 +87,53 @@ export default function App() {
     }
   };
 
+  const handleUnlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setTokenError('');
+    const ok = await unlockWithToken(tokenInput.trim());
+    if (!ok) {
+      setTokenError('Invalid panel access token.');
+    }
+  };
+
   const openInIde = (filePath: string) => {
     setIdeFileTarget(filePath);
     setActivePage('files');
   };
+
+  if (authRequired) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#0b0e14] text-slate-100 p-4">
+        <form
+          onSubmit={handleUnlock}
+          className="w-full max-w-md bg-[#111620] border border-slate-800/80 rounded-lg p-6 space-y-4"
+        >
+          <div className="flex items-center gap-2.5">
+            <KeyRound className="w-5 h-5 text-emerald-400" />
+            <h1 className="font-display text-lg font-semibold">AetherCore Panel Access</h1>
+          </div>
+          <p className="text-xs text-slate-400">
+            This control panel is protected by an access token. Connected IP: <span className="font-mono text-slate-300">{clientIp}</span>
+          </p>
+          <input
+            type="password"
+            value={tokenInput}
+            onChange={(e) => setTokenInput(e.target.value)}
+            placeholder="Enter Panel Access Token..."
+            autoFocus
+            className="w-full px-3 py-2 text-xs font-mono bg-[#0b0e14] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
+          />
+          {tokenError && <div className="text-xs text-rose-400">{tokenError}</div>}
+          <button
+            type="submit"
+            className="w-full py-2 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer"
+          >
+            Unlock Control Panel
+          </button>
+        </form>
+      </div>
+    );
+  }
 
   const activeNav = NAV_ITEMS.find((n) => n.id === activePage) ?? NAV_ITEMS[0];
   const isRunning = metrics?.status === 'running';
@@ -157,8 +207,8 @@ export default function App() {
 
         <div className="p-4 border-t border-slate-800/80 text-xs text-slate-400 space-y-1">
           <div className="flex items-center justify-between">
-            <span>Minecraft 26.3</span>
-            <span className="font-mono text-slate-300">Proto 777</span>
+            <span>Versions</span>
+            <span className="font-mono text-slate-300">{metrics?.supportedVersions ?? '1.21 – 26.3'}</span>
           </div>
           <div className="flex items-center justify-between">
             <span>TCP Port</span>
@@ -243,6 +293,7 @@ export default function App() {
                   metrics={metrics}
                   history={history}
                   config={config}
+                  networkInfo={networkInfo}
                   onServerAction={handleServerAction}
                   onToast={pushToast}
                 />
@@ -267,7 +318,7 @@ export default function App() {
                 />
               )}
               {activePage === 'settings' && (
-                <SettingsView config={config} onToast={pushToast} />
+                <SettingsView config={config} networkInfo={networkInfo} onToast={pushToast} />
               )}
             </>
           )}

@@ -1,6 +1,16 @@
 export type GameMode = 'survival' | 'creative' | 'adventure' | 'spectator';
 export type Difficulty = 'peaceful' | 'easy' | 'normal' | 'hard';
 
+export interface SecurityConfig {
+  ipWhitelistEnabled: boolean;
+  enforceMinecraftIpWhitelist: boolean;
+  allowedIps: string[];
+  protectWebPanel: boolean;
+  panelAccessToken: string;
+  maxConnectionsPerIp: number;
+  maxHandshakesPerMinute: number;
+}
+
 export interface ServerConfig {
   motd: string;
   port: number;
@@ -14,6 +24,17 @@ export interface ServerConfig {
   maxPacketSize: number;
   worldType: 'superflat' | 'void';
   spawnProtection: boolean;
+  publicHost: string;
+  security: SecurityConfig;
+}
+
+export interface NetworkInfo {
+  connectAddress: string;
+  detectedIp: string;
+  clientIp: string;
+  port: number;
+  isCloudContainer: boolean;
+  supportedRange: string;
 }
 
 export type ServerStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
@@ -33,6 +54,7 @@ export interface ServerMetrics {
   runtimeVersion: string;
   protocolVersion: number;
   minecraftVersion: string;
+  supportedVersions: string;
   port: number;
   uptimeMs: number;
   tps: number;
@@ -45,6 +67,7 @@ export interface ServerMetrics {
   totalPacketsIn: number;
   totalPacketsOut: number;
   droppedPackets: number;
+  blockedConnections: number;
   tickCount: number;
   workerActive: boolean;
   errorMessage?: string;
@@ -70,6 +93,7 @@ export interface PlayerInfo {
   ip: string;
   protocolVersion: number;
   clientVersionLabel: string;
+  viaTranslated: boolean;
   ping: number;
   x: number;
   y: number;
