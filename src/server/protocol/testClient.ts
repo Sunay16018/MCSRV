@@ -5,7 +5,7 @@ import {
   PacketReader,
   PacketWriter,
 } from './codec.ts';
-import { PRIMARY_PROTOCOL_VERSION } from './mapper.ts';
+import { PRIMARY_PROTOCOL_VERSION, ProtocolMapper, type ProtocolProfile } from './mapper.ts';
 
 export interface StatusProbeResult {
   motd: string;
@@ -20,6 +20,7 @@ export interface StatusProbeResult {
 interface ActiveBotSession {
   username: string;
   socket: net.Socket;
+  profile: ProtocolProfile;
   compressionThreshold: number;
   state: 'HANDSHAKE' | 'LOGIN' | 'CONFIGURATION' | 'PLAY';
   buffer: Buffer;
@@ -104,9 +105,11 @@ export async function spawnRealProtocolBot(
 
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host: '127.0.0.1', port });
+    const profile = ProtocolMapper.resolveProfile(protocolVersion);
     const session: ActiveBotSession = {
       username,
       socket,
+      profile,
       compressionThreshold: -1,
       state: 'HANDSHAKE',
       buffer: Buffer.alloc(0) as Buffer,
@@ -150,30 +153,30 @@ export async function spawnRealProtocolBot(
           const reader = new PacketReader(pkt.payload);
 
           if (session.state === 'LOGIN') {
-            if (pkt.packetId === 0x03) {
+            if (pkt.packetId === profile.clientbound.LOGIN.set_compression) {
               session.compressionThreshold = reader.readVarInt();
-            } else if (pkt.packetId === 0x02) {
+            } else if (pkt.packetId === profile.clientbound.LOGIN.login_success) {
               // Login Success -> send Login Acknowledged (0x03)
               socket.write(framePacket(0x03, Buffer.alloc(0), session.compressionThreshold).framed);
               session.state = 'CONFIGURATION';
               const clientInfo = new PacketWriter().writeString('en_US').writeByte(6).toBuffer();
               socket.write(framePacket(0x00, clientInfo, session.compressionThreshold).framed);
-            } else if (pkt.packetId === 0x00) {
+            } else if (pkt.packetId === profile.clientbound.LOGIN.disconnect) {
               clearTimeout(timeout);
               socket.destroy();
               reject(new Error(`Disconnected during login: ${reader.readString()}`));
               return;
             }
           } else if (session.state === 'CONFIGURATION') {
-            if (pkt.packetId === 0x0e) {
+            if (pkt.packetId === profile.clientbound.CONFIGURATION.select_known_packs) {
               const ackKnown = new PacketWriter()
                 .writeVarInt(1)
                 .writeString('minecraft')
                 .writeString('core')
-                .writeString('26.3')
+                .writeString(profile.knownPackVersion)
                 .toBuffer();
               socket.write(framePacket(0x07, ackKnown, session.compressionThreshold).framed);
-            } else if (pkt.packetId === 0x03) {
+            } else if (pkt.packetId === profile.clientbound.CONFIGURATION.finish_configuration) {
               socket.write(framePacket(0x03, Buffer.alloc(0), session.compressionThreshold).framed);
               session.state = 'PLAY';
               activeBots.set(username, session);
@@ -181,11 +184,15 @@ export async function spawnRealProtocolBot(
               resolve(username);
             }
           } else if (session.state === 'PLAY') {
-            if (pkt.packetId === 0x26 || pkt.packetId === 0x27) {
-              // Reply to Keep Alive
+            if (pkt.packetId === profile.clientbound.PLAY.keep_alive) {
               const keepId = reader.readLong();
+              const sbKeepId = ProtocolMapper.getServerboundId('PLAY', 'keep_alive', profile) ?? 0x18;
               const pong = new PacketWriter().writeLong(keepId).toBuffer();
-              socket.write(framePacket(0x18, pong, session.compressionThreshold).framed);
+              socket.write(framePacket(sbKeepId, pong, session.compressionThreshold).framed);
+            } else if (pkt.packetId === profile.clientbound.PLAY.player_position) {
+              const ackId = ProtocolMapper.getServerboundId('PLAY', 'confirm_teleportation', profile) ?? 0x00;
+              const tpAck = new PacketWriter().writeVarInt(1).toBuffer();
+              socket.write(framePacket(ackId, tpAck, session.compressionThreshold).framed);
             }
           }
         }
@@ -215,11 +222,13 @@ export function sendBotChatOrCommand(username: string, message: string): boolean
   if (!session || session.state !== 'PLAY') return false;
 
   if (message.startsWith('/')) {
+    const cmdId = ProtocolMapper.getServerboundId('PLAY', 'chat_command', session.profile) ?? 0x05;
     const cmdPayload = new PacketWriter().writeString(message.slice(1)).toBuffer();
-    session.socket.write(framePacket(0x04, cmdPayload, session.compressionThreshold).framed);
+    session.socket.write(framePacket(cmdId, cmdPayload, session.compressionThreshold).framed);
   } else {
+    const chatId = ProtocolMapper.getServerboundId('PLAY', 'chat', session.profile) ?? 0x07;
     const chatPayload = new PacketWriter().writeString(message).toBuffer();
-    session.socket.write(framePacket(0x06, chatPayload, session.compressionThreshold).framed);
+    session.socket.write(framePacket(chatId, chatPayload, session.compressionThreshold).framed);
   }
   return true;
 }
@@ -227,12 +236,21 @@ export function sendBotChatOrCommand(username: string, message: string): boolean
 export function moveBotStep(username: string, dx: number, dy: number, dz: number, curX: number, curY: number, curZ: number): boolean {
   const session = activeBots.get(username);
   if (!session || session.state !== 'PLAY') return false;
+  const moveId = ProtocolMapper.getServerboundId('PLAY', 'move_player_pos', session.profile) ?? 0x1e;
   const w = new PacketWriter()
     .writeDouble(curX + dx)
     .writeDouble(curY + dy)
     .writeDouble(curZ + dz)
+    .writeUByte(0x01)
     .toBuffer();
-  session.socket.write(framePacket(0x1a, w, session.compressionThreshold).framed);
+  session.socket.write(framePacket(moveId, w, session.compressionThreshold).framed);
+
+  if (session.profile.hasClientTickEnd) {
+    const tickEndId = ProtocolMapper.getServerboundId('PLAY', 'client_tick_end', session.profile);
+    if (tickEndId !== undefined) {
+      session.socket.write(framePacket(tickEndId, Buffer.alloc(0), session.compressionThreshold).framed);
+    }
+  }
   return true;
 }
 

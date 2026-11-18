@@ -420,7 +420,7 @@ export class MinecraftServerEngine extends EventEmitter {
               packetName,
               sizeBytes: pkt.rawSize,
               compressed: pkt.compressed,
-              summary: this.summarizeInbound(conn.state, pkt.packetId, pkt.payload),
+              summary: this.summarizeInbound(conn.state, pkt.packetId, pkt.payload, conn.profile),
               hexPreview: pkt.payload.subarray(0, 32).toString('hex'),
             });
 
@@ -626,12 +626,12 @@ export class MinecraftServerEngine extends EventEmitter {
 
     if (conn.state === 'CONFIGURATION') {
       if (packetName === 'client_information') {
-        // Acknowledge known packs (minecraft:core 26.3)
+        // Acknowledge known packs matching client protocol version
         const kp = new PacketWriter()
           .writeVarInt(1)
           .writeString('minecraft')
           .writeString('core')
-          .writeString(PRIMARY_MINECRAFT_VERSION);
+          .writeString(conn.profile.knownPackVersion);
         this.sendPacket(conn, conn.profile.clientbound.CONFIGURATION.select_known_packs, kp.toBuffer());
       } else if (packetName === 'select_known_packs') {
         this.sendConfigurationRegistries(conn);
@@ -646,6 +646,15 @@ export class MinecraftServerEngine extends EventEmitter {
 
     if (conn.state === 'PLAY' && conn.player) {
       const player = conn.player;
+
+      if (packetName === 'confirm_teleportation') {
+        if (reader.remaining > 0) reader.readVarInt();
+        return;
+      }
+
+      if (packetName === 'client_tick_end') {
+        return;
+      }
 
       if (packetName === 'keep_alive') {
         const id = reader.readLong();
@@ -688,6 +697,9 @@ export class MinecraftServerEngine extends EventEmitter {
         if (packetName === 'move_player_rot' || packetName === 'move_player_pos_rot') {
           nextYaw = reader.readFloat();
           nextPitch = reader.readFloat();
+        }
+        if (reader.remaining >= 1) {
+          reader.readUByte(); // onGround / flags byte (1.21.2+ has bitflags, 1.21 has onGround boolean)
         }
 
         const moveEvt = {
@@ -844,8 +856,11 @@ export class MinecraftServerEngine extends EventEmitter {
       .writeBoolean(false) // isDebug
       .writeBoolean(this.config.worldType === 'superflat')
       .writeBoolean(false) // hasDeathLocation
-      .writeVarInt(0) // portalCooldown
-      .writeVarInt(63); // seaLevel
+      .writeVarInt(0); // portalCooldown
+    if (conn.profile.hasSeaLevelInLoginPlay) {
+      loginPlay.writeVarInt(63); // seaLevel added in 1.21.2 (protocol 768+)
+    }
+    loginPlay.writeBoolean(false); // enforcesSecureChat (required in 1.20.5+ / 767-777)
     this.sendPacket(conn, conn.profile.clientbound.PLAY.login_play, loginPlay.toBuffer());
 
     // 2. Game Event (13 = Start waiting for level chunks)
@@ -1085,18 +1100,31 @@ export class MinecraftServerEngine extends EventEmitter {
   }
 
   private sendSynchronizePosition(player: InternalPlayer): void {
-    const w = new PacketWriter()
-      .writeVarInt(1) // teleportId
-      .writeDouble(player.x)
-      .writeDouble(player.y)
-      .writeDouble(player.z)
-      .writeDouble(0) // dx
-      .writeDouble(0) // dy
-      .writeDouble(0) // dz
-      .writeFloat(player.yaw)
-      .writeFloat(player.pitch)
-      .writeInt(0); // flags
-    this.sendPacket(player.connection, player.connection.profile.clientbound.PLAY.player_position, w.toBuffer());
+    const profile = player.connection.profile;
+    const w = new PacketWriter();
+    if (profile.hasVelocityInPlayerPosition) {
+      // 1.21.2+ (Protocols 768 - 777): teleportId, pos(xyz), vel(xyz), yaw, pitch, flags(Int)
+      w.writeVarInt(1)
+        .writeDouble(player.x)
+        .writeDouble(player.y)
+        .writeDouble(player.z)
+        .writeDouble(0)
+        .writeDouble(0)
+        .writeDouble(0)
+        .writeFloat(player.yaw)
+        .writeFloat(player.pitch)
+        .writeInt(0);
+    } else {
+      // 1.21 / 1.21.1 (Protocol 767): pos(xyz), yaw, pitch, flags(Byte), teleportId
+      w.writeDouble(player.x)
+        .writeDouble(player.y)
+        .writeDouble(player.z)
+        .writeFloat(player.yaw)
+        .writeFloat(player.pitch)
+        .writeByte(0)
+        .writeVarInt(1);
+    }
+    this.sendPacket(player.connection, profile.clientbound.PLAY.player_position, w.toBuffer());
   }
 
   private sendPlayerAbilities(player: InternalPlayer): void {
@@ -1180,22 +1208,31 @@ export class MinecraftServerEngine extends EventEmitter {
   }
 
   private broadcastPlayerPosition(moved: InternalPlayer): void {
-    const w = new PacketWriter()
-      .writeVarInt(moved.entityId)
-      .writeDouble(moved.x)
-      .writeDouble(moved.y)
-      .writeDouble(moved.z)
-      .writeDouble(0)
-      .writeDouble(0)
-      .writeDouble(0)
-      .writeFloat(moved.yaw)
-      .writeFloat(moved.pitch)
-      .writeInt(0);
-    const buf = w.toBuffer();
     for (const other of this.players.values()) {
-      if (other.uuid !== moved.uuid) {
-        this.sendPacket(other.connection, other.connection.profile.clientbound.PLAY.teleport_entity, buf);
+      if (other.uuid === moved.uuid) continue;
+      const profile = other.connection.profile;
+      const w = new PacketWriter().writeVarInt(moved.entityId);
+      if (profile.hasVelocityInPlayerPosition) {
+        // 1.21.2+ (768 - 777) Teleport Entity: entityId, x, y, z, vx, vy, vz, yaw(Float), pitch(Float), onGround(Boolean)
+        w.writeDouble(moved.x)
+          .writeDouble(moved.y)
+          .writeDouble(moved.z)
+          .writeDouble(0)
+          .writeDouble(0)
+          .writeDouble(0)
+          .writeFloat(moved.yaw)
+          .writeFloat(moved.pitch)
+          .writeBoolean(true);
+      } else {
+        // 1.21 (767) Teleport Entity: entityId, x, y, z, yaw(Angle), pitch(Angle), onGround(Boolean)
+        w.writeDouble(moved.x)
+          .writeDouble(moved.y)
+          .writeDouble(moved.z)
+          .writeUByte(Math.floor((moved.yaw * 256) / 360) & 0xff)
+          .writeUByte(Math.floor((moved.pitch * 256) / 360) & 0xff)
+          .writeBoolean(true);
       }
+      this.sendPacket(other.connection, profile.clientbound.PLAY.teleport_entity, w.toBuffer());
     }
   }
 
@@ -1321,7 +1358,7 @@ export class MinecraftServerEngine extends EventEmitter {
     return undefined;
   }
 
-  private summarizeInbound(state: ProtocolState, packetId: number, payload: Buffer): string {
+  private summarizeInbound(state: ProtocolState, packetId: number, payload: Buffer, profile?: ProtocolProfile): string {
     try {
       const r = new PacketReader(payload);
       if (state === 'HANDSHAKE' && packetId === 0x00) {
@@ -1334,11 +1371,14 @@ export class MinecraftServerEngine extends EventEmitter {
       if (state === 'LOGIN' && packetId === 0x00) {
         return `username=${r.readString(16)}`;
       }
-      if (state === 'PLAY' && packetId === 0x06) {
-        return `chat="${r.readString(120)}"`;
-      }
-      if (state === 'PLAY' && (packetId === 0x04 || packetId === 0x05)) {
-        return `cmd="/${r.readString(120)}"`;
+      if (state === 'PLAY' && profile) {
+        const pName = ProtocolMapper.getServerboundName('PLAY', packetId, profile);
+        if (pName === 'chat') {
+          return `chat="${r.readString(120)}"`;
+        }
+        if (pName === 'chat_command' || pName === 'chat_command_signed') {
+          return `cmd="/${r.readString(120)}"`;
+        }
       }
     } catch {
       // Fallback

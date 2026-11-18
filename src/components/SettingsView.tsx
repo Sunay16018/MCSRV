@@ -94,21 +94,21 @@ export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps
   };
 
   return (
-    <form onSubmit={handleSubmit} className="max-w-4xl space-y-6">
+    <form onSubmit={handleSubmit} className="max-w-4xl space-y-4 sm:space-y-6">
       {/* Core Gameplay & Network Config */}
-      <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-6 space-y-5">
-        <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+      <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-4 sm:p-6 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800/80">
           <div>
             <h2 className="text-base font-semibold text-slate-100">Server Configuration (config.json)</h2>
             <p className="text-xs text-slate-400 mt-0.5">
               Changes persist directly to disk and apply immediately to 1.21–26.3 status responses and gameplay.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={() => config && setForm(config)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
+              className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               Reset
@@ -116,7 +116,7 @@ export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps
             <button
               type="submit"
               disabled={saving}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white whitespace-nowrap shrink-0 cursor-pointer"
+              className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Save className="w-3.5 h-3.5" />
               {saving ? 'Applying...' : 'Save & Apply'}
@@ -124,7 +124,7 @@ export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-5 text-xs">
           <div className="md:col-span-2">
             <label className="block font-medium text-slate-300 mb-1.5">Server MOTD</label>
             <input
@@ -143,7 +143,7 @@ export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps
               type="text"
               value={form.publicHost}
               onChange={(e) => setForm({ ...form, publicHost: e.target.value })}
-              placeholder={`Auto-detected (${networkInfo?.detectedIp ?? '127.0.0.1'}) — e.g. 54.123.45.67 or play.yourdomain.com`}
+              placeholder={`Auto-detected (${networkInfo?.detectedIp ?? '127.0.0.1'}) — e.g. 54.123.45.67`}
               className="w-full px-3 py-2 font-mono bg-[#0b0e14] border border-slate-800 rounded-md text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-emerald-500"
             />
           </div>
@@ -264,7 +264,7 @@ export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps
             />
           </div>
 
-          <div className="flex items-center gap-6 pt-2">
+          <div className="flex flex-wrap items-center gap-4 sm:gap-6 pt-2">
             <label className="inline-flex items-center gap-2 cursor-pointer text-slate-200">
               <input
                 type="checkbox"
@@ -289,8 +289,8 @@ export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps
       </div>
 
       {/* AWS Firewall, IP Allowlist & Panel Auth Hardening */}
-      <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-6 space-y-5">
-        <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-800/80">
+      <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-4 sm:p-6 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 pb-4 border-b border-slate-800/80">
           <div className="flex items-start gap-2.5">
             <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
             <div>
@@ -304,7 +304,7 @@ export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps
             <button
               type="button"
               onClick={() => addAllowedIp(networkInfo.clientIp)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
               Add My IP ({networkInfo.clientIp})
@@ -312,9 +312,9 @@ export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps
           )}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5 text-xs">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-5 text-xs">
           <div className="space-y-2.5 md:col-span-2">
-            <label className="inline-flex items-center gap-2.5 cursor-pointer text-slate-200">
+            <label className="flex items-start sm:items-center gap-2.5 cursor-pointer text-slate-200">
               <input
                 type="checkbox"
                 checked={form.security.ipWhitelistEnabled}
@@ -324,40 +324,38 @@ export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps
                     security: { ...form.security, ipWhitelistEnabled: e.target.checked },
                   })
                 }
-                className="rounded border-slate-700 bg-[#0b0e14] text-emerald-500"
+                className="mt-0.5 sm:mt-0 rounded border-slate-700 bg-[#0b0e14] text-emerald-500 shrink-0"
               />
-              Enforce IP Allowlist on Web Control Panel (Port 3000)
+              <span>Enforce IP Allowlist on Web Control Panel (Port 3000)</span>
             </label>
 
-            <div>
-              <label className="inline-flex items-center gap-2.5 cursor-pointer text-slate-200">
-                <input
-                  type="checkbox"
-                  checked={form.security.enforceMinecraftIpWhitelist}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      security: { ...form.security, enforceMinecraftIpWhitelist: e.target.checked },
-                    })
-                  }
-                  className="rounded border-slate-700 bg-[#0b0e14] text-emerald-500"
-                />
-                Enforce IP Allowlist on Minecraft TCP Server (Port {form.port})
-              </label>
-            </div>
+            <label className="flex items-start sm:items-center gap-2.5 cursor-pointer text-slate-200">
+              <input
+                type="checkbox"
+                checked={form.security.enforceMinecraftIpWhitelist}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    security: { ...form.security, enforceMinecraftIpWhitelist: e.target.checked },
+                  })
+                }
+                className="mt-0.5 sm:mt-0 rounded border-slate-700 bg-[#0b0e14] text-emerald-500 shrink-0"
+              />
+              <span>Enforce IP Allowlist on Minecraft TCP Server (Port {form.port})</span>
+            </label>
           </div>
 
           <div className="md:col-span-2 space-y-2">
             <label className="block font-medium text-slate-300">
               Allowed IPs & CIDR Ranges (127.0.0.1 is always permitted locally)
             </label>
-            <div className="flex gap-2">
+            <div className="flex flex-col sm:flex-row gap-2">
               <input
                 type="text"
                 value={newIpInput}
                 onChange={(e) => setNewIpInput(e.target.value)}
                 placeholder="e.g. 203.0.113.45 or 203.0.113.0/24"
-                className="flex-1 px-3 py-2 font-mono bg-[#0b0e14] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
+                className="flex-1 min-w-0 px-3 py-2 font-mono bg-[#0b0e14] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
               />
               <button
                 type="button"
@@ -370,11 +368,11 @@ export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps
             <div className="divide-y divide-slate-800/60 border border-slate-800/80 rounded-md bg-[#0b0e14]">
               {form.security.allowedIps.map((ip) => (
                 <div key={ip} className="px-3 py-2 flex items-center justify-between font-mono text-slate-200">
-                  <span>{ip}</span>
+                  <span className="truncate">{ip}</span>
                   <button
                     type="button"
                     onClick={() => removeAllowedIp(ip)}
-                    className="text-slate-500 hover:text-rose-400 cursor-pointer"
+                    className="text-slate-500 hover:text-rose-400 cursor-pointer shrink-0"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -384,7 +382,7 @@ export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps
           </div>
 
           <div className="md:col-span-2 pt-2 border-t border-slate-800/80 space-y-3">
-            <label className="inline-flex items-center gap-2.5 cursor-pointer text-slate-200">
+            <label className="flex items-start sm:items-center gap-2.5 cursor-pointer text-slate-200">
               <input
                 type="checkbox"
                 checked={form.security.protectWebPanel}
@@ -394,12 +392,12 @@ export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps
                     security: { ...form.security, protectWebPanel: e.target.checked },
                   })
                 }
-                className="rounded border-slate-700 bg-[#0b0e14] text-emerald-500"
+                className="mt-0.5 sm:mt-0 rounded border-slate-700 bg-[#0b0e14] text-emerald-500 shrink-0"
               />
-              Require Panel Access Token for Web UI & WebSocket (Recommended for AWS)
+              <span>Require Panel Access Token for Web UI & WebSocket (Recommended for AWS)</span>
             </label>
 
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col sm:flex-row gap-2">
               <input
                 type="text"
                 value={form.security.panelAccessToken}
@@ -410,25 +408,27 @@ export function SettingsView({ config, networkInfo, onToast }: SettingsViewProps
                   })
                 }
                 placeholder="Click Generate Token or enter custom secret key..."
-                className="flex-1 min-w-60 px-3 py-2 font-mono bg-[#0b0e14] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
+                className="flex-1 min-w-0 px-3 py-2 font-mono bg-[#0b0e14] border border-slate-800 rounded-md text-slate-100 focus:outline-none focus:border-emerald-500"
               />
-              <button
-                type="button"
-                onClick={generateToken}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md font-medium bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <KeyRound className="w-3.5 h-3.5 text-amber-400" />
-                Generate Token
-              </button>
-              <button
-                type="button"
-                onClick={copyToken}
-                disabled={!form.security.panelAccessToken}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <Copy className="w-3.5 h-3.5" />
-                Copy
-              </button>
+              <div className="grid grid-cols-2 sm:flex gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={generateToken}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md font-medium bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+                  Generate
+                </button>
+                <button
+                  type="button"
+                  onClick={copyToken}
+                  disabled={!form.security.panelAccessToken}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  Copy
+                </button>
+              </div>
             </div>
           </div>
 

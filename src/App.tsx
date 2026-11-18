@@ -103,7 +103,7 @@ export default function App() {
 
   if (authRequired) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#0b0e14] text-slate-100 p-4">
+      <div className="min-h-dvh flex items-center justify-center bg-[#0b0e14] text-slate-100 p-4">
         <form
           onSubmit={handleUnlock}
           className="w-full max-w-md bg-[#111620] border border-slate-800/80 rounded-lg p-6 space-y-4"
@@ -113,7 +113,8 @@ export default function App() {
             <h1 className="font-display text-lg font-semibold">AetherCore Panel Access</h1>
           </div>
           <p className="text-xs text-slate-400">
-            This control panel is protected by an access token. Connected IP: <span className="font-mono text-slate-300">{clientIp}</span>
+            This control panel is protected by an access token. Connected IP:{' '}
+            <span className="font-mono text-slate-300">{clientIp}</span>
           </p>
           <input
             type="password"
@@ -139,11 +140,11 @@ export default function App() {
   const isRunning = metrics?.status === 'running';
 
   return (
-    <div className="min-h-screen flex bg-[#0b0e14] text-slate-100">
+    <div className="h-dvh flex bg-[#0b0e14] text-slate-100 overflow-hidden">
       {/* Mobile Sidebar Backdrop */}
       {mobileMenuOpen && (
         <div
-          className="fixed inset-0 bg-black/60 z-40 lg:hidden"
+          className="fixed inset-0 bg-black/65 z-40 lg:hidden"
           onClick={() => setMobileMenuOpen(false)}
         />
       )}
@@ -154,7 +155,7 @@ export default function App() {
           mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="h-14 px-5 flex items-center justify-between border-b border-slate-800/80">
+        <div className="h-14 px-5 flex items-center justify-between border-b border-slate-800/80 shrink-0">
           <div className="flex items-center gap-2.5">
             <Box className="w-5 h-5 text-emerald-400 shrink-0" />
             <span className="font-display font-bold text-base tracking-tight text-slate-100 whitespace-nowrap">
@@ -163,7 +164,8 @@ export default function App() {
           </div>
           <button
             onClick={() => setMobileMenuOpen(false)}
-            className="lg:hidden text-slate-400 hover:text-slate-100 cursor-pointer"
+            className="lg:hidden p-1 text-slate-400 hover:text-slate-100 cursor-pointer"
+            aria-label="Close navigation"
           >
             <X className="w-4 h-4" />
           </button>
@@ -177,6 +179,9 @@ export default function App() {
               <button
                 key={item.id}
                 onClick={() => {
+                  if (item.id === 'files') {
+                    setIdeFileTarget(null);
+                  }
                   setActivePage(item.id);
                   setMobileMenuOpen(false);
                 }}
@@ -205,7 +210,7 @@ export default function App() {
           })}
         </nav>
 
-        <div className="p-4 border-t border-slate-800/80 text-xs text-slate-400 space-y-1">
+        <div className="p-4 border-t border-slate-800/80 text-xs text-slate-400 space-y-1 shrink-0">
           <div className="flex items-center justify-between">
             <span>Versions</span>
             <span className="font-mono text-slate-300">{metrics?.supportedVersions ?? '1.21 – 26.3'}</span>
@@ -224,21 +229,21 @@ export default function App() {
       </aside>
 
       {/* Main Content Shell */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {/* Top Header Bar */}
-        <header className="h-14 px-5 border-b border-slate-800/80 bg-[#0e131c]/80 flex items-center justify-between gap-6 shrink-0">
-          <div className="flex items-center gap-3 min-w-0">
+        <header className="h-14 px-3 sm:px-5 border-b border-slate-800/80 bg-[#0e131c]/90 flex items-center justify-between gap-2 sm:gap-6 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <button
               onClick={() => setMobileMenuOpen(true)}
-              className="lg:hidden p-1.5 rounded text-slate-400 hover:text-slate-100 cursor-pointer"
+              className="lg:hidden p-1.5 rounded text-slate-400 hover:text-slate-100 cursor-pointer shrink-0"
               aria-label="Open navigation"
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div className="flex items-center gap-2 text-sm truncate">
-              <span className="text-slate-500 whitespace-nowrap">Server Engine</span>
-              <span className="text-slate-600">/</span>
-              <h1 className="font-display font-semibold text-slate-100 whitespace-nowrap">
+            <div className="flex items-center gap-2 text-sm min-w-0">
+              <span className="hidden md:inline text-slate-500 whitespace-nowrap">Server Engine</span>
+              <span className="hidden md:inline text-slate-600">/</span>
+              <h1 className="font-display font-semibold text-slate-100 truncate">
                 {activeNav.label}
               </h1>
               <span className="hidden sm:inline text-slate-600">·</span>
@@ -252,38 +257,40 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {isRunning ? (
               <>
                 <button
                   onClick={() => handleServerAction('restart')}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  aria-label="Restart server"
                 >
                   <RotateCw className="w-3.5 h-3.5" />
-                  Restart
+                  <span className="hidden sm:inline">Restart</span>
                 </button>
                 <button
                   onClick={() => handleServerAction('stop')}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-rose-950/60 hover:bg-rose-900/70 text-rose-200 border border-rose-800/60 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-medium bg-rose-950/60 hover:bg-rose-900/70 text-rose-200 border border-rose-800/60 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  aria-label="Stop server"
                 >
                   <Square className="w-3.5 h-3.5" />
-                  Stop
+                  <span className="hidden sm:inline">Stop</span>
                 </button>
               </>
             ) : (
               <button
                 onClick={() => handleServerAction('start')}
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-1.5 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Play className="w-3.5 h-3.5" />
-                Start Server
+                <span>Start</span>
               </button>
             )}
           </div>
         </header>
 
         {/* Active View Viewport */}
-        <main className="flex-1 p-5 overflow-y-auto">
+        <main className="flex-1 p-3 sm:p-5 overflow-y-auto min-h-0">
           {loading ? (
             <div className="p-8 text-xs text-slate-400">Connecting to AetherCore control plane...</div>
           ) : (
@@ -299,10 +306,14 @@ export default function App() {
                 />
               )}
               {activePage === 'console' && (
-                <ConsoleView logs={logs} onClearLocal={clearLogsLocal} />
+                <ConsoleView logs={logs} onClearLocal={clearLogsLocal} onToast={pushToast} />
               )}
               {activePage === 'files' && (
-                <FilesView initialFilePath={ideFileTarget} onToast={pushToast} />
+                <FilesView
+                  initialFilePath={ideFileTarget}
+                  onClearInitialFile={() => setIdeFileTarget(null)}
+                  onToast={pushToast}
+                />
               )}
               {activePage === 'plugins' && (
                 <PluginsView plugins={plugins} onEditFile={openInIde} onToast={pushToast} />
@@ -327,7 +338,7 @@ export default function App() {
 
       {/* Toast Notifications */}
       {toasts.length > 0 && (
-        <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+        <div className="fixed bottom-3 left-3 right-3 sm:left-auto sm:bottom-4 sm:right-4 z-50 flex flex-col gap-2 sm:max-w-sm">
           {toasts.map((t) => (
             <div
               key={t.id}
@@ -339,13 +350,13 @@ export default function App() {
                     : 'bg-[#131b26] border-emerald-700/70 text-slate-100'
               }`}
             >
-              <div>
+              <div className="min-w-0">
                 <div className="font-semibold">{t.title}</div>
-                <div className="text-slate-300 mt-0.5">{t.message}</div>
+                <div className="text-slate-300 mt-0.5 break-words">{t.message}</div>
               </div>
               <button
                 onClick={() => dismissToast(t.id)}
-                className="text-slate-400 hover:text-white cursor-pointer"
+                className="text-slate-400 hover:text-white cursor-pointer shrink-0"
               >
                 <X className="w-3.5 h-3.5" />
               </button>

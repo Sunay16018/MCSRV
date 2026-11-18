@@ -96,15 +96,15 @@ function TelemetrySvgChart({
     secondaryAccessor && secondaryMax ? buildPath(secondaryAccessor, secondaryMax) : null;
 
   return (
-    <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-5">
-      <div className="flex flex-wrap items-baseline justify-between gap-4 mb-4">
+    <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-4 sm:p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-3 mb-3 sm:mb-4">
         <div>
           <h3 className="text-sm font-semibold text-slate-100">{label}</h3>
           <p className="text-xs text-slate-400 mt-0.5">
             Real-time 500ms telemetry stream · {samples.length} samples
           </p>
         </div>
-        <div className="flex items-center gap-5 text-xs tabular-nums">
+        <div className="flex flex-wrap items-center gap-4 text-xs tabular-nums">
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-0.5 rounded-full" style={{ backgroundColor: stroke }} />
             <span className="text-slate-400">{label.split(' ')[0]}:</span>
@@ -124,7 +124,7 @@ function TelemetrySvgChart({
 
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        className="w-full h-40 overflow-visible"
+        className="w-full h-32 sm:h-40 overflow-visible"
         role="img"
         aria-label={label}
       >
@@ -270,17 +270,17 @@ export function DashboardView({
           : 'text-rose-400';
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Direct Minecraft Server Address Banner */}
-      <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-5 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-start gap-3.5 min-w-0">
+      <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="flex items-start gap-3 min-w-0">
           <Globe className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="text-xs text-slate-400">
-              Minecraft Server Address · Supported Versions {metrics?.supportedVersions ?? '1.21 – 26.3'} (ViaBackwards)
+              Minecraft Server Address · Versions {metrics?.supportedVersions ?? '1.21 – 26.3'} (ViaBackwards)
             </div>
-            <div className="mt-1 flex flex-wrap items-center gap-3">
-              <span className="text-lg sm:text-xl font-mono font-semibold text-slate-100 tabular-nums truncate">
+            <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
+              <span className="text-base sm:text-xl font-mono font-semibold text-slate-100 tabular-nums break-all">
                 {connectAddr}
               </span>
               <button
@@ -291,7 +291,7 @@ export function DashboardView({
                 {copiedIp ? 'Copied' : 'Copy IP'}
               </button>
             </div>
-            <div className="mt-1.5 text-xs text-slate-400">
+            <div className="mt-1.5 text-xs text-slate-400 leading-relaxed">
               {networkInfo?.isCloudContainer
                 ? 'Running inside an HTTP/HTTPS cloud container — internal TCP 25565 is active for panel probes; deploy to AWS EC2/Lightsail (open TCP 25565 to your IP) for external Minecraft launcher connections.'
                 : `Your IP: ${networkInfo?.clientIp ?? '127.0.0.1'} · TCP ${metrics?.port ?? 25565} listening on 0.0.0.0 · ${
@@ -303,11 +303,11 @@ export function DashboardView({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="grid grid-cols-3 sm:flex items-center gap-2 shrink-0">
           <button
             onClick={() => triggerAction('start')}
             disabled={isRunning || busyAction !== null}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:pointer-events-none text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:pointer-events-none text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Play className="w-3.5 h-3.5" />
             Start
@@ -315,7 +315,7 @@ export function DashboardView({
           <button
             onClick={() => triggerAction('restart')}
             disabled={busyAction !== null}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <RotateCw className="w-3.5 h-3.5" />
             Restart
@@ -323,7 +323,7 @@ export function DashboardView({
           <button
             onClick={() => triggerAction('stop')}
             disabled={!isRunning || busyAction !== null}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md text-xs font-medium bg-rose-950/60 hover:bg-rose-900/70 disabled:opacity-40 disabled:pointer-events-none text-rose-200 border border-rose-800/60 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2 rounded-md text-xs font-medium bg-rose-950/60 hover:bg-rose-900/70 disabled:opacity-40 disabled:pointer-events-none text-rose-200 border border-rose-800/60 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Square className="w-3.5 h-3.5" />
             Stop
@@ -332,70 +332,70 @@ export function DashboardView({
       </div>
 
       {/* Primary KPI Strip */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
+        <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-3.5 sm:p-4">
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span>Tick Rate (TPS)</span>
-            <Activity className="w-4 h-4 text-emerald-400" />
+            <Activity className="w-4 h-4 text-emerald-400 shrink-0" />
           </div>
-          <div className={`mt-2 text-2xl font-display font-semibold font-mono tabular-nums ${tpsColor}`}>
+          <div className={`mt-2 text-xl sm:text-2xl font-display font-semibold font-mono tabular-nums ${tpsColor}`}>
             {isRunning ? (metrics?.tps ?? 20).toFixed(2) : '0.00'}
           </div>
-          <div className="mt-1 text-xs text-slate-500 font-mono tabular-nums">
-            Target 20.00 · {metrics?.mspt?.toFixed(2) ?? '0.00'} ms/tick
+          <div className="mt-1 text-[11px] sm:text-xs text-slate-500 font-mono tabular-nums truncate">
+            {metrics?.mspt?.toFixed(2) ?? '0.00'} ms/tick
           </div>
         </div>
 
-        <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-4">
+        <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-3.5 sm:p-4">
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span>Memory Usage</span>
-            <HardDrive className="w-4 h-4 text-sky-400" />
+            <HardDrive className="w-4 h-4 text-sky-400 shrink-0" />
           </div>
-          <div className="mt-2 text-2xl font-display font-semibold font-mono tabular-nums text-slate-100">
-            {metrics?.ramUsedMb ?? 0} <span className="text-sm font-normal text-slate-400">MB</span>
+          <div className="mt-2 text-xl sm:text-2xl font-display font-semibold font-mono tabular-nums text-slate-100">
+            {metrics?.ramUsedMb ?? 0} <span className="text-xs sm:text-sm font-normal text-slate-400">MB</span>
           </div>
-          <div className="mt-1 text-xs text-slate-500 font-mono tabular-nums">
-            System {metrics?.ramTotalMb ?? 0} MB total
+          <div className="mt-1 text-[11px] sm:text-xs text-slate-500 font-mono tabular-nums truncate">
+            {metrics?.ramTotalMb ?? 0} MB host
           </div>
         </div>
 
-        <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-4">
+        <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-3.5 sm:p-4">
           <div className="flex items-center justify-between text-xs text-slate-400">
-            <span>CPU Utilization</span>
-            <Cpu className="w-4 h-4 text-amber-400" />
+            <span>CPU Load</span>
+            <Cpu className="w-4 h-4 text-amber-400 shrink-0" />
           </div>
-          <div className="mt-2 text-2xl font-display font-semibold font-mono tabular-nums text-slate-100">
+          <div className="mt-2 text-xl sm:text-2xl font-display font-semibold font-mono tabular-nums text-slate-100">
             {(metrics?.cpuPercent ?? 0).toFixed(1)}
-            <span className="text-sm font-normal text-slate-400">%</span>
+            <span className="text-xs sm:text-sm font-normal text-slate-400">%</span>
           </div>
-          <div className="mt-1 text-xs text-slate-500 font-mono tabular-nums">
-            Worker loop {metrics?.workerActive ? 'isolated' : 'idle'}
+          <div className="mt-1 text-[11px] sm:text-xs text-slate-500 font-mono tabular-nums truncate">
+            Worker {metrics?.workerActive ? 'isolated' : 'idle'}
           </div>
         </div>
 
-        <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-4">
+        <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-3.5 sm:p-4">
           <div className="flex items-center justify-between text-xs text-slate-400">
-            <span>Active Players</span>
-            <Users className="w-4 h-4 text-emerald-400" />
+            <span>Players</span>
+            <Users className="w-4 h-4 text-emerald-400 shrink-0" />
           </div>
-          <div className="mt-2 text-2xl font-display font-semibold font-mono tabular-nums text-slate-100">
+          <div className="mt-2 text-xl sm:text-2xl font-display font-semibold font-mono tabular-nums text-slate-100">
             {metrics?.onlinePlayers ?? 0}{' '}
-            <span className="text-sm font-normal text-slate-500">/ {metrics?.maxPlayers ?? 50}</span>
+            <span className="text-xs sm:text-sm font-normal text-slate-500">/ {metrics?.maxPlayers ?? 50}</span>
           </div>
-          <div className="mt-1 text-xs text-slate-500 tabular-nums">
+          <div className="mt-1 text-[11px] sm:text-xs text-slate-500 tabular-nums capitalize truncate">
             {config?.gamemode ?? 'survival'} · {config?.worldType ?? 'superflat'}
           </div>
         </div>
 
-        <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-4">
+        <div className="col-span-2 sm:col-span-1 bg-[#111620] border border-slate-800/80 rounded-lg p-3.5 sm:p-4">
           <div className="flex items-center justify-between text-xs text-slate-400">
-            <span>Server Uptime</span>
-            <Wifi className="w-4 h-4 text-emerald-400" />
+            <span>Uptime</span>
+            <Wifi className="w-4 h-4 text-emerald-400 shrink-0" />
           </div>
-          <div className="mt-2 text-2xl font-display font-semibold font-mono tabular-nums text-slate-100">
+          <div className="mt-2 text-xl sm:text-2xl font-display font-semibold font-mono tabular-nums text-slate-100">
             {formatUptime(metrics?.uptimeMs ?? 0)}
           </div>
-          <div className="mt-1 text-xs text-slate-500 font-mono tabular-nums">
+          <div className="mt-1 text-[11px] sm:text-xs text-slate-500 font-mono tabular-nums">
             Ticks: {(metrics?.tickCount ?? 0).toLocaleString()}
           </div>
         </div>
@@ -438,8 +438,8 @@ export function DashboardView({
 
       {/* Engine Telemetry & Protocol 1.21-26.3 Live Probe */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-5">
-          <div className="flex items-start justify-between gap-4">
+        <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-4 sm:p-5">
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 sm:gap-4">
             <div>
               <h3 className="text-sm font-semibold text-slate-100">Engine & Shield Telemetry</h3>
               <p className="text-xs text-slate-400 mt-1">
@@ -447,7 +447,7 @@ export function DashboardView({
                 {metrics?.runtime === 'bun' ? `Bun v${metrics.runtimeVersion}` : `Node ${metrics?.runtimeVersion}`}
               </p>
             </div>
-            <div className="text-right font-mono text-xs tabular-nums">
+            <div className="sm:text-right font-mono text-xs tabular-nums shrink-0">
               <div className="text-slate-200">0.0.0.0:{metrics?.port ?? 25565}</div>
               <div className="text-slate-500 mt-0.5">
                 Zlib threshold {config?.compressionThreshold ?? 256}B
@@ -455,7 +455,7 @@ export function DashboardView({
             </div>
           </div>
 
-          <div className="mt-5 pt-4 border-t border-slate-800/80 grid grid-cols-4 gap-4 text-xs">
+          <div className="mt-4 sm:mt-5 pt-4 border-t border-slate-800/80 grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 text-xs">
             <div>
               <div className="text-slate-500">Packets In</div>
               <div className="mt-1 text-base font-mono font-semibold text-slate-100 tabular-nums">
@@ -483,7 +483,7 @@ export function DashboardView({
           </div>
         </div>
 
-        <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-5">
+        <div className="bg-[#111620] border border-slate-800/80 rounded-lg p-4 sm:p-5">
           <div>
             <h3 className="text-sm font-semibold text-slate-100">TCP Protocol & ViaBackwards Live Probe</h3>
             <p className="text-xs text-slate-400 mt-1">
@@ -491,7 +491,7 @@ export function DashboardView({
             </p>
           </div>
 
-          <div className="mt-4 flex flex-wrap items-center gap-2.5">
+          <div className="mt-4 flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2.5">
             <select
               value={probeProtocol}
               onChange={(e) => setProbeProtocol(Number(e.target.value))}
@@ -499,6 +499,7 @@ export function DashboardView({
             >
               <option value={777}>26.3 (Proto 777 Native)</option>
               <option value={775}>26.1 (Proto 775 Via)</option>
+              <option value={774}>1.21.11 (Proto 774 Via)</option>
               <option value={770}>1.21.5 (Proto 770 Via)</option>
               <option value={769}>1.21.4 (Proto 769 Via)</option>
               <option value={767}>1.21 (Proto 767 Via)</option>
@@ -506,34 +507,36 @@ export function DashboardView({
             <button
               onClick={spawnProbePlayer}
               disabled={!isRunning || busyAction !== null}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <UserPlus className="w-3.5 h-3.5" />
               Connect Test Player
             </button>
-            <button
-              onClick={runStatusPing}
-              disabled={!isRunning || busyAction !== null}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Radio className="w-3.5 h-3.5 text-emerald-400" />
-              Status Ping
-            </button>
-            <button
-              onClick={testMalformedShield}
-              disabled={!isRunning || busyAction !== null}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-              Shield Test
-            </button>
+            <div className="grid grid-cols-2 sm:flex gap-2">
+              <button
+                onClick={runStatusPing}
+                disabled={!isRunning || busyAction !== null}
+                className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Radio className="w-3.5 h-3.5 text-emerald-400" />
+                Status Ping
+              </button>
+              <button
+                onClick={testMalformedShield}
+                disabled={!isRunning || busyAction !== null}
+                className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-md text-xs font-medium bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 border border-slate-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+                Shield Test
+              </button>
+            </div>
           </div>
 
           {probeStatusResult ? (
             <div className="mt-4 pt-3 border-t border-slate-800/80 text-xs space-y-1 font-mono">
-              <div className="flex items-center justify-between text-slate-300">
-                <span>MOTD: {probeStatusResult.motd}</span>
-                <span className="text-emerald-400 tabular-nums">{probeStatusResult.rttMs} ms</span>
+              <div className="flex items-center justify-between gap-2 text-slate-300">
+                <span className="truncate">MOTD: {probeStatusResult.motd}</span>
+                <span className="text-emerald-400 tabular-nums shrink-0">{probeStatusResult.rttMs} ms</span>
               </div>
               <div className="text-slate-500 tabular-nums">
                 Version {probeStatusResult.versionName} · Protocol {probeStatusResult.protocol} · Players{' '}

@@ -37,10 +37,12 @@ export function buildFileTree(relDir = ''): FileNode[] {
     const childAbs = path.join(absPath, entry.name);
 
     if (entry.isDirectory()) {
+      const stat = fs.statSync(childAbs);
       nodes.push({
         name: entry.name,
         path: childRel,
         type: 'directory',
+        modifiedAt: stat.mtimeMs,
         children: buildFileTree(childRel),
       });
     } else if (entry.isFile()) {
