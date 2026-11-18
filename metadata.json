@@ -1,0 +1,6 @@
+{
+  "name": "AetherCore 26.3",
+  "description": "High-performance Bun TypeScript Minecraft Java Edition 26.3 (Protocol 777) server engine with hot-reload plugins and real-time web control panel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
