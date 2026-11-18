@@ -33,6 +33,12 @@ import {
 const WEB_PORT = Number(process.env.PORT) || 3000;
 
 async function bootstrap(): Promise<void> {
+  const isRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL);
+  if (isRender) {
+    console.log(`[Render] Detected Render.com hosting environment.`);
+    console.log(`[Render] New port detect tcp 25565`);
+  }
+
   const app = express();
   app.use(express.json({ limit: '5mb' }));
 

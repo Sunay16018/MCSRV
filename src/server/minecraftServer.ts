@@ -210,6 +210,12 @@ export class MinecraftServerEngine extends EventEmitter {
   }
 
   private async bindTcpSocket(port: number): Promise<void> {
+    const isRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL);
+    if (isRender || port === 25565) {
+      console.log(`[Render] New port detect tcp ${port}`);
+      this.log('Render', `New port detect tcp ${port}`, 'INFO');
+    }
+
     const bunGlobal = (globalThis as unknown as {
       Bun?: {
         listen: (opts: {
