@@ -157,6 +157,92 @@ export class PacketReader {
     return { x, y, z };
   }
 
+  readVarLong(): bigint {
+    let numRead = 0;
+    let result = 0n;
+    let read: number;
+    do {
+      if (this.offset >= this.buffer.length) {
+        throw new PacketCodecError('Unexpected EOF while reading VarLong');
+      }
+      read = this.buffer[this.offset++];
+      const value = BigInt(read & 0x7f);
+      result |= value << BigInt(7 * numRead);
+      numRead++;
+      if (numRead > 10) {
+        throw new PacketCodecError('VarLong exceeds maximum 10 bytes');
+      }
+    } while ((read & 0x80) !== 0);
+    return BigInt.asIntN(64, result);
+  }
+
+  private skipNbtPayload(tagType: number): void {
+    switch (tagType) {
+      case 0:
+        return;
+      case 1:
+        this.readBytes(1);
+        return;
+      case 2:
+        this.readBytes(2);
+        return;
+      case 3:
+      case 5:
+        this.readBytes(4);
+        return;
+      case 4:
+      case 6:
+        this.readBytes(8);
+        return;
+      case 7: {
+        const len = this.readInt();
+        this.readBytes(len);
+        return;
+      }
+      case 8: {
+        const len = this.readUShort();
+        this.readBytes(len);
+        return;
+      }
+      case 9: {
+        const elemType = this.readUByte();
+        const len = this.readInt();
+        for (let i = 0; i < len; i++) {
+          this.skipNbtPayload(elemType);
+        }
+        return;
+      }
+      case 10: {
+        while (true) {
+          const childType = this.readUByte();
+          if (childType === 0) break;
+          const nameLen = this.readUShort();
+          this.readBytes(nameLen);
+          this.skipNbtPayload(childType);
+        }
+        return;
+      }
+      case 11: {
+        const len = this.readInt();
+        this.readBytes(len * 4);
+        return;
+      }
+      case 12: {
+        const len = this.readInt();
+        this.readBytes(len * 8);
+        return;
+      }
+      default:
+        throw new PacketCodecError(`Unknown NBT tag type: ${tagType}`);
+    }
+  }
+
+  skipNbt(): void {
+    const rootType = this.readUByte();
+    if (rootType === 0) return;
+    this.skipNbtPayload(rootType);
+  }
+
   readBytes(length: number): Buffer {
     if (length < 0) {
       throw new PacketCodecError(`Negative byte length: ${length}`);

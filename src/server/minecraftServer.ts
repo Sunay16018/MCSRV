@@ -843,9 +843,19 @@ export class MinecraftServerEngine extends EventEmitter {
       if (packetName === 'swing') {
         const hand = reader.remaining >= 1 ? reader.readVarInt() : 0;
         const animType = hand === 1 ? 3 : 0; // 0 = main hand swing, 3 = offhand swing
-        const animPayload = new PacketWriter().writeVarInt(player.entityId).writeUByte(animType).toBuffer();
         for (const other of this.players.values()) {
-          if (other.uuid !== player.uuid) {
+          if (other.uuid === player.uuid) continue;
+          const swingAnimId = other.connection.profile.clientbound.PLAY.swing_animation;
+          if (other.connection.profile.protocolVersion >= 777 && swingAnimId !== undefined) {
+            const swingPayload = new PacketWriter()
+              .writeVarInt(player.entityId)
+              .writeVarInt(hand === 1 ? 1 : 0)
+              .writeVarInt(1) // whack
+              .writeVarInt(6) // duration ticks
+              .toBuffer();
+            this.sendPacket(other.connection, swingAnimId, swingPayload);
+          } else {
+            const animPayload = new PacketWriter().writeVarInt(player.entityId).writeUByte(animType).toBuffer();
             this.sendPacket(other.connection, other.connection.profile.clientbound.PLAY.animate, animPayload);
           }
         }
@@ -939,9 +949,11 @@ export class MinecraftServerEngine extends EventEmitter {
         if (reader.remaining >= 1) reader.readByte(); // face
         const sequence = reader.remaining >= 1 ? reader.readVarInt() : 0;
 
-        // status 0 = started digging (instant in creative), 2 = finished digging
+        // In 26.3 (777), action=1 is change_destroy_direction, action=2 is abort, action=3 is stop.
+        // In 1.21-26.2 (767-776), action=2 is stop.
+        const stopAction = conn.profile.protocolVersion >= 777 ? 3 : 2;
         const isCreativeBreak = status === 0 && player.gamemode === 'creative';
-        if (status === 2 || isCreativeBreak) {
+        if (status === stopAction || isCreativeBreak) {
           const currentBlock = this.world.getBlock(pos.x, pos.y, pos.z);
           if (currentBlock !== BLOCK_IDS.AIR) {
             if (pos.y <= 0 && currentBlock === BLOCK_IDS.BEDROCK && player.gamemode !== 'creative') {
@@ -1054,6 +1066,9 @@ export class MinecraftServerEngine extends EventEmitter {
       w.writeNbtString('effects', 'minecraft:overworld');
       w.writeNbtInt('monster_spawn_light_level', 0);
       w.writeNbtInt('monster_spawn_block_light_limit', 0);
+      if (proto >= 775) {
+        w.writeNbtString('default_clock', 'minecraft:overworld');
+      }
     } else if (registryId === 'minecraft:worldgen/biome') {
       w.writeNbtBoolean('has_precipitation', true);
       w.writeNbtFloat('temperature', 0.8);
@@ -1104,12 +1119,26 @@ export class MinecraftServerEngine extends EventEmitter {
       w.writeNbtString('angry_texture', 'minecraft:entity/wolf/wolf_angry');
       w.writeNbtString('biomes', 'minecraft:plains');
     } else if (registryId === 'minecraft:wolf_sound_variant') {
-      w.writeNbtString('ambient_sound', 'minecraft:entity.wolf.ambient');
-      w.writeNbtString('death_sound', 'minecraft:entity.wolf.death');
-      w.writeNbtString('growl_sound', 'minecraft:entity.wolf.growl');
-      w.writeNbtString('hurt_sound', 'minecraft:entity.wolf.hurt');
-      w.writeNbtString('pant_sound', 'minecraft:entity.wolf.pant');
-      w.writeNbtString('whine_sound', 'minecraft:entity.wolf.whine');
+      if (proto >= 775) {
+        for (const ageGroup of ['adult_sounds', 'baby_sounds']) {
+          w.writeNbtCompoundStart(ageGroup);
+          w.writeNbtString('ambient_sound', 'minecraft:entity.wolf.ambient');
+          w.writeNbtString('death_sound', 'minecraft:entity.wolf.death');
+          w.writeNbtString('growl_sound', 'minecraft:entity.wolf.growl');
+          w.writeNbtString('hurt_sound', 'minecraft:entity.wolf.hurt');
+          w.writeNbtString('pant_sound', 'minecraft:entity.wolf.pant');
+          w.writeNbtString('whine_sound', 'minecraft:entity.wolf.whine');
+          w.writeNbtString('step_sound', 'minecraft:entity.wolf.step');
+          w.writeNbtEnd();
+        }
+      } else {
+        w.writeNbtString('ambient_sound', 'minecraft:entity.wolf.ambient');
+        w.writeNbtString('death_sound', 'minecraft:entity.wolf.death');
+        w.writeNbtString('growl_sound', 'minecraft:entity.wolf.growl');
+        w.writeNbtString('hurt_sound', 'minecraft:entity.wolf.hurt');
+        w.writeNbtString('pant_sound', 'minecraft:entity.wolf.pant');
+        w.writeNbtString('whine_sound', 'minecraft:entity.wolf.whine');
+      }
     } else if (registryId === 'minecraft:world_clock') {
       // Empty compound defines a basic World Clock in 26.1+
     } else if (registryId === 'minecraft:timeline') {
@@ -1127,6 +1156,9 @@ export class MinecraftServerEngine extends EventEmitter {
       const shortName = entryId.replace('minecraft:', '');
       const mob = registryId.replace('minecraft:', '').replace('_variant', '');
       w.writeNbtString('asset_id', `minecraft:entity/${mob}/${shortName}`);
+      if (proto >= 775 && ['pig', 'cow', 'chicken', 'frog', 'cat'].includes(mob)) {
+        w.writeNbtString('baby_asset_id', `minecraft:entity/${mob}/${shortName}_baby`);
+      }
     }
     w.writeNbtEnd();
   }
@@ -1283,9 +1315,13 @@ export class MinecraftServerEngine extends EventEmitter {
       .writeBoolean(false) // doLimitedCrafting
       .writeVarInt(0) // dimensionType
       .writeString('minecraft:overworld')
-      .writeLong(0n) // hashedSeed
-      .writeUByte(this.gameModeToByte(player.gamemode))
-      .writeByte(-1) // previousGamemode
+      .writeLong(0n); // hashedSeed
+    if (conn.profile.usesVarIntGamemodeInSpawnInfo) {
+      loginPlay.writeVarInt(this.gameModeToByte(player.gamemode)).writeVarInt(0); // OptVarInt(None)
+    } else {
+      loginPlay.writeUByte(this.gameModeToByte(player.gamemode)).writeByte(-1);
+    }
+    loginPlay
       .writeBoolean(false) // isDebug
       .writeBoolean(this.config.worldType === 'superflat')
       .writeBoolean(false) // hasDeathLocation
@@ -1293,11 +1329,16 @@ export class MinecraftServerEngine extends EventEmitter {
     if (conn.profile.hasSeaLevelInLoginPlay) {
       loginPlay.writeVarInt(63);
     }
+    if (conn.profile.hasOnlineModeInLoginPlay) {
+      loginPlay.writeBoolean(this.config.onlineMode);
+    }
     loginPlay.writeBoolean(false); // enforcesSecureChat
     this.sendPacket(conn, conn.profile.clientbound.PLAY.login_play, loginPlay.toBuffer());
 
     // 2. Sync Difficulty (Normal = 2, unlocked) & Abilities & Held Slot
-    const diff = new PacketWriter().writeUByte(2).writeBoolean(false);
+    const diff = conn.profile.protocolVersion >= 775
+      ? new PacketWriter().writeVarInt(2).writeBoolean(false)
+      : new PacketWriter().writeUByte(2).writeBoolean(false);
     this.sendPacket(conn, conn.profile.clientbound.PLAY.change_difficulty, diff.toBuffer());
 
     this.sendPlayerAbilities(player);
@@ -1401,10 +1442,13 @@ export class MinecraftServerEngine extends EventEmitter {
     const w = new PacketWriter()
       .writeVarInt(0) // dimensionType
       .writeString('minecraft:overworld')
-      .writeLong(0n) // hashedSeed
-      .writeUByte(this.gameModeToByte(player.gamemode))
-      .writeByte(-1) // previousGamemode
-      .writeBoolean(false) // isDebug
+      .writeLong(0n); // hashedSeed
+    if (conn.profile.usesVarIntGamemodeInSpawnInfo) {
+      w.writeVarInt(this.gameModeToByte(player.gamemode)).writeVarInt(0);
+    } else {
+      w.writeUByte(this.gameModeToByte(player.gamemode)).writeByte(-1);
+    }
+    w.writeBoolean(false) // isDebug
       .writeBoolean(this.config.worldType === 'superflat')
       .writeBoolean(false) // hasDeathLocation
       .writeVarInt(0); // portalCooldown
@@ -1801,10 +1845,13 @@ export class MinecraftServerEngine extends EventEmitter {
       .writeUByte(Math.floor((subject.pitch * 256) / 360) & 0xff)
       .writeUByte(Math.floor((subject.yaw * 256) / 360) & 0xff)
       .writeUByte(Math.floor((subject.yaw * 256) / 360) & 0xff)
-      .writeVarInt(0)
-      .writeShort(0)
-      .writeShort(0)
-      .writeShort(0);
+      .writeVarInt(0);
+    if (conn.profile.hasLpVec3Velocity) {
+      // 1.21.9+ (773-777): LpVec3 zero vector encodes as single byte 0x00
+      w.writeUByte(0);
+    } else {
+      w.writeShort(0).writeShort(0).writeShort(0);
+    }
     this.sendPacket(conn, conn.profile.clientbound.PLAY.spawn_entity, w.toBuffer());
   }
 

@@ -17,8 +17,11 @@ export interface ProtocolProfile {
   omitPaletteDataLength: boolean; // >= 770 (1.21.5+ removed PalettedContainer data array length VarInt)
   hasStrictLoginSuccessFlag: boolean; // 767 (1.21 / 1.21.1)
   hasSessionIdInLoginSuccess: boolean; // >= 776 (26.2 / 26.3 adds UUID sessionId)
+  hasOnlineModeInLoginPlay: boolean; // >= 776 (26.2 / 26.3 adds onlineMode bool before enforcesSecureChat)
+  usesVarIntGamemodeInSpawnInfo: boolean; // >= 777 (26.3 uses VarInt game_type & OptVarInt previous_game_type)
   hasSeaLevelInLoginPlay: boolean; // >= 768 (1.21.2+)
   hasVelocityInPlayerPosition: boolean; // >= 768 (1.21.2+)
+  hasLpVec3Velocity: boolean; // >= 773 (1.21.9+ uses LpVec3 velocity in spawn_entity)
   hasByteHeldSlot: boolean; // 767 uses i8, >= 768 uses VarInt
   hasClientTickEnd: boolean; // >= 768 (1.21.2+)
   hasWorldBorderHitInBlockPlace: boolean; // >= 768 (1.21.2+ added worldBorderHit bool)
@@ -437,6 +440,7 @@ const PLAY_CLIENTBOUND_777: Record<string, number> = {
   set_health: 0x6a,
   set_held_slot: 0x6b,
   set_time: 0x73,
+  swing_animation: 0x7b,
   chat_system: 0x7c,
   teleport_entity: 0x80,
 };
@@ -454,7 +458,8 @@ const CONFIG_SERVERBOUND_ALL: Record<number, string> = {
   0x09: 'accept_code_of_conduct',
 };
 
-const CONFIG_CLIENTBOUND_ALL: Record<string, number> = {
+// 1.21 - 26.2 (Protocols 767 - 776)
+const CONFIG_CLIENTBOUND_767_776: Record<string, number> = {
   cookie_request: 0x00,
   custom_payload: 0x01,
   disconnect_config: 0x02,
@@ -463,9 +468,33 @@ const CONFIG_CLIENTBOUND_ALL: Record<string, number> = {
   ping: 0x05,
   reset_chat: 0x06,
   registry_data: 0x07,
+  resource_pack_pop: 0x08,
+  resource_pack_push: 0x09,
+  store_cookie: 0x0a,
+  transfer: 0x0b,
   feature_flags: 0x0c,
   update_tags: 0x0d,
   select_known_packs: 0x0e,
+};
+
+// 26.3 (Protocol 777): Mojang inserted POST_EFFECTS at 0x0a, shifting 0x0a..0x13 by +1
+const CONFIG_CLIENTBOUND_777: Record<string, number> = {
+  cookie_request: 0x00,
+  custom_payload: 0x01,
+  disconnect_config: 0x02,
+  finish_configuration: 0x03,
+  keep_alive: 0x04,
+  ping: 0x05,
+  reset_chat: 0x06,
+  registry_data: 0x07,
+  resource_pack_pop: 0x08,
+  resource_pack_push: 0x09,
+  post_effects: 0x0a,
+  store_cookie: 0x0b,
+  transfer: 0x0c,
+  feature_flags: 0x0d,
+  update_tags: 0x0e,
+  select_known_packs: 0x0f,
 };
 
 export const SUPPORTED_VERSIONS: Record<number, string> = {
@@ -553,8 +582,11 @@ export class ProtocolMapper {
       omitPaletteDataLength: clientProtocol >= 770,
       hasStrictLoginSuccessFlag: clientProtocol === 767,
       hasSessionIdInLoginSuccess: clientProtocol >= 776,
+      hasOnlineModeInLoginPlay: clientProtocol >= 776,
+      usesVarIntGamemodeInSpawnInfo: clientProtocol >= 777,
       hasSeaLevelInLoginPlay: clientProtocol >= 768,
       hasVelocityInPlayerPosition: clientProtocol >= 768,
+      hasLpVec3Velocity: clientProtocol >= 773,
       hasByteHeldSlot: clientProtocol === 767,
       hasClientTickEnd: clientProtocol >= 768,
       hasWorldBorderHitInBlockPlace: clientProtocol >= 768,
@@ -573,7 +605,7 @@ export class ProtocolMapper {
           login_success: 0x02,
           set_compression: 0x03,
         },
-        CONFIGURATION: { ...CONFIG_CLIENTBOUND_ALL },
+        CONFIGURATION: clientProtocol >= 777 ? { ...CONFIG_CLIENTBOUND_777 } : { ...CONFIG_CLIENTBOUND_767_776 },
         PLAY: playClientbound,
       },
     };
