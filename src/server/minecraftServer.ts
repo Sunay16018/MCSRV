@@ -35,7 +35,7 @@ import {
   type ProtocolProfile,
 } from './protocol/mapper.ts';
 import { ConnectionRateLimiter, normalizeIp } from './security.ts';
-import { WorldEngine } from './world/chunkGenerator.ts';
+import { BLOCK_IDS, resolveBlockStateForProtocol, WorldEngine } from './world/chunkGenerator.ts';
 import { PluginManager } from './plugins/pluginManager.ts';
 import type { PluginPlayer } from './plugins/pluginApi.ts';
 
@@ -59,17 +59,38 @@ interface ClientConnection {
   player?: InternalPlayer;
   lastKeepAliveId?: bigint;
   lastKeepAliveSentAt?: number;
+  lastActivityAt: number;
+  openedAt: number;
+  rxBytes: number;
+  txBytes: number;
+  configPacksSent: boolean;
+  configRegistriesSent: boolean;
   closed: boolean;
   processingQueue: Promise<void>;
 }
 
 interface InternalPlayer extends PlayerInfo {
   connection: ClientConnection;
+  selectedSlot: number;
+  hotbarBlocks: number[]; // block state IDs mapped to hotbar slots 0..8
+  sneaking: boolean;
+  sprinting: boolean;
 }
 
 const MAX_CONSOLE_LOGS = 400;
 const MAX_PACKET_LOGS = 300;
 const MAX_METRIC_HISTORY = 90;
+const DEFAULT_HOTBAR_BLOCKS = [
+  BLOCK_IDS.OAK_PLANKS,
+  BLOCK_IDS.STONE,
+  BLOCK_IDS.COBBLESTONE,
+  BLOCK_IDS.GRASS_BLOCK,
+  BLOCK_IDS.DIRT,
+  BLOCK_IDS.GLASS,
+  BLOCK_IDS.OAK_PLANKS,
+  BLOCK_IDS.STONE,
+  BLOCK_IDS.COBBLESTONE,
+];
 
 export class MinecraftServerEngine extends EventEmitter {
   private config: ServerConfig;
@@ -79,6 +100,7 @@ export class MinecraftServerEngine extends EventEmitter {
   private keepAliveInterval: ReturnType<typeof setInterval> | null = null;
 
   private connections = new Map<string, ClientConnection>();
+  private socketConnIds = new WeakMap<object, string>();
   private players = new Map<string, InternalPlayer>(); // key = uuid
   private bans: BannedPlayer[] = [];
   private ops: Set<string> = new Set();
@@ -89,6 +111,7 @@ export class MinecraftServerEngine extends EventEmitter {
 
   private nextEntityId = 100;
   private nextConnSeq = 1;
+  private nextTeleportId = 1;
   private startedAt = 0;
 
   private tps = 20.0;
@@ -141,7 +164,11 @@ export class MinecraftServerEngine extends EventEmitter {
     this.world.setWorldType(this.config.worldType);
 
     const runtime = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined' ? 'Bun' : 'Node';
-    this.log('Engine', `Starting AetherCore ${PRIMARY_MINECRAFT_VERSION} (Protocol ${PRIMARY_PROTOCOL_VERSION}) on ${runtime} runtime...`, 'INFO');
+    this.log(
+      'Engine',
+      `Starting AetherCore ${PRIMARY_MINECRAFT_VERSION} (Proto ${PRIMARY_PROTOCOL_VERSION}, Compat ${SUPPORTED_RANGE_LABEL}) on ${runtime} runtime...`,
+      'INFO'
+    );
 
     try {
       await this.bindTcpSocket(this.config.port);
@@ -149,13 +176,41 @@ export class MinecraftServerEngine extends EventEmitter {
       this.startKeepAliveLoop();
       this.startedAt = Date.now();
       this.status = 'running';
-      this.log('Network', `Minecraft TCP listener bound on 0.0.0.0:${this.config.port} (compression >= ${this.config.compressionThreshold}B)`, 'INFO');
+      this.log(
+        'Network',
+        `Minecraft TCP listener active on 0.0.0.0:${this.config.port} (compression >= ${this.config.compressionThreshold}B)`,
+        'INFO'
+      );
+      void this.logCloudNetworkDiagnostics(this.config.port);
       this.emitMetrics();
     } catch (err) {
       this.status = 'error';
       this.errorMessage = (err as Error).message;
       this.log('Engine', `Failed to start TCP listener on port ${this.config.port}: ${this.errorMessage}`, 'ERROR');
       this.emitMetrics();
+    }
+  }
+
+  private async logCloudNetworkDiagnostics(port: number): Promise<void> {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 400);
+      const res = await fetch('http://169.254.169.254/latest/meta-data/public-ipv4', {
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        const ec2Ip = (await res.text()).trim();
+        if (/^\d+\.\d+\.\d+\.\d+$/.test(ec2Ip)) {
+          this.log(
+            'AWS-EC2',
+            `Public join address: ${ec2Ip}:${port} · Ensure EC2 Security Group allows Inbound Custom TCP ${port} & OS firewall (ufw) allows ${port}/tcp.`,
+            'INFO'
+          );
+        }
+      }
+    } catch {
+      // Not on EC2 IMDSv1 or local environment; ignore silently
     }
   }
 
@@ -222,10 +277,10 @@ export class MinecraftServerEngine extends EventEmitter {
           hostname: string;
           port: number;
           socket: {
-            open: (socket: { remoteAddress: string; write: (d: Uint8Array) => number; end: () => void; data: { connId?: string } }) => void;
-            data: (socket: { data: { connId?: string } }, data: Uint8Array) => void;
-            close: (socket: { data: { connId?: string } }) => void;
-            error: (socket: { data: { connId?: string } }, err: Error) => void;
+            open: (socket: { remoteAddress: string; write: (d: Uint8Array) => number; end: () => void }) => void;
+            data: (socket: object, data: Uint8Array) => void;
+            close: (socket: object) => void;
+            error: (socket: object, err: Error) => void;
           };
         }) => { stop: (closeActive?: boolean) => void };
       };
@@ -237,7 +292,6 @@ export class MinecraftServerEngine extends EventEmitter {
         port,
         socket: {
           open: (socket) => {
-            socket.data = {};
             const conn = this.handleSocketOpen({
               remoteAddress: socket.remoteAddress || '127.0.0.1',
               write: (d) => {
@@ -255,25 +309,28 @@ export class MinecraftServerEngine extends EventEmitter {
                 }
               },
             });
-            socket.data.connId = conn.id;
+            this.socketConnIds.set(socket, conn.id);
           },
           data: (socket, data) => {
-            const conn = socket.data.connId ? this.connections.get(socket.data.connId) : undefined;
+            const connId = this.socketConnIds.get(socket);
+            const conn = connId ? this.connections.get(connId) : undefined;
             if (conn) {
               this.handleSocketData(conn, Buffer.from(data));
             }
           },
           close: (socket) => {
-            const conn = socket.data.connId ? this.connections.get(socket.data.connId) : undefined;
+            const connId = this.socketConnIds.get(socket);
+            const conn = connId ? this.connections.get(connId) : undefined;
             if (conn) {
-              this.handleSocketClose(conn);
+              this.handleSocketClose(conn, 'TCP peer closed');
             }
           },
           error: (socket, err) => {
-            const conn = socket.data.connId ? this.connections.get(socket.data.connId) : undefined;
+            const connId = this.socketConnIds.get(socket);
+            const conn = connId ? this.connections.get(connId) : undefined;
             if (conn) {
-              this.log('Network', `Socket error (${conn.id}): ${err.message}`, 'WARN');
-              this.handleSocketClose(conn);
+              this.log('Network', `Socket error (${conn.id}, state=${conn.state}): ${err.message}`, 'WARN');
+              this.handleSocketClose(conn, err.message);
             }
           },
         },
@@ -285,6 +342,7 @@ export class MinecraftServerEngine extends EventEmitter {
     // Fallback to node:net if ever run outside Bun
     await new Promise<void>((resolve, reject) => {
       const server = net.createServer((socket) => {
+        socket.setNoDelay(true);
         const conn = this.handleSocketOpen({
           remoteAddress: socket.remoteAddress || '127.0.0.1',
           write: (d) => {
@@ -295,8 +353,8 @@ export class MinecraftServerEngine extends EventEmitter {
           },
         });
         socket.on('data', (chunk) => this.handleSocketData(conn, chunk));
-        socket.on('close', () => this.handleSocketClose(conn));
-        socket.on('error', () => this.handleSocketClose(conn));
+        socket.on('close', () => this.handleSocketClose(conn, 'TCP peer closed'));
+        socket.on('error', (err) => this.handleSocketClose(conn, err.message));
       });
       server.on('error', reject);
       server.listen(port, '0.0.0.0', () => {
@@ -328,6 +386,19 @@ export class MinecraftServerEngine extends EventEmitter {
         this.tickCount = data.tickCount;
         this.tps = data.tps;
         this.mspt = data.mspt;
+        this.world.advanceTick();
+
+        // Broadcast world time every 20 ticks (1s) to 1.21-1.21.11 clients
+        if (this.tickCount % 20 === 0 && this.players.size > 0) {
+          for (const p of this.players.values()) {
+            this.sendWorldTimeTo(p.connection);
+            if (p.y < -64) {
+              this.teleportPlayer(p, 0.5, 64.0, 0.5, p.yaw, p.pitch);
+              this.sendPlayerChat(p, 'Void protection returned you to spawn.');
+            }
+          }
+        }
+
         if (data.telemetry) {
           this.ramUsedMb = data.telemetry.ramUsedMb;
           this.ramTotalMb = data.telemetry.ramTotalMb;
@@ -344,14 +415,38 @@ export class MinecraftServerEngine extends EventEmitter {
     this.keepAliveInterval = setInterval(() => {
       if (this.status !== 'running') return;
       const now = Date.now();
-      for (const player of this.players.values()) {
-        const conn = player.connection;
-        if (conn.closed || conn.state !== 'PLAY') continue;
-        const keepAliveId = BigInt(now);
-        conn.lastKeepAliveId = keepAliveId;
-        conn.lastKeepAliveSentAt = now;
-        const w = new PacketWriter().writeLong(keepAliveId);
-        this.sendPacket(conn, conn.profile.clientbound.PLAY.keep_alive, w.toBuffer());
+      for (const conn of Array.from(this.connections.values())) {
+        if (conn.closed) continue;
+
+        // Prune dead pre-play connections so rapid reconnects never exhaust maxConnectionsPerIp
+        if (conn.state !== 'PLAY' && conn.state !== 'CONFIGURATION' && now - conn.lastActivityAt > 15000) {
+          this.handleSocketClose(conn, 'Idle handshake/status timeout (15s)');
+          conn.socket.end();
+          continue;
+        }
+
+        // Send KeepAlive in BOTH Configuration & Play states (prevents 20s-30s Configuration timeouts!)
+        if (conn.state === 'CONFIGURATION' || conn.state === 'PLAY') {
+          if (conn.lastKeepAliveSentAt && now - conn.lastActivityAt > 30000) {
+            this.log(
+              'Network',
+              `KeepAlive timeout (${conn.username ?? conn.id}, state=${conn.state}, proto=${conn.profile.label}) — closing stale connection.`,
+              'WARN'
+            );
+            this.disconnectConnection(conn, 'Timed out (KeepAlive 30s)');
+            continue;
+          }
+
+          const keepAliveId = BigInt(now);
+          conn.lastKeepAliveId = keepAliveId;
+          conn.lastKeepAliveSentAt = now;
+          const w = new PacketWriter().writeLong(keepAliveId);
+          const pktId =
+            conn.state === 'CONFIGURATION'
+              ? conn.profile.clientbound.CONFIGURATION.keep_alive
+              : conn.profile.clientbound.PLAY.keep_alive;
+          this.sendPacket(conn, pktId, w.toBuffer());
+        }
       }
     }, 5000);
   }
@@ -367,6 +462,7 @@ export class MinecraftServerEngine extends EventEmitter {
     }
 
     const check = this.rateLimiter.checkAllowed(cleanIp, activeFromIp, this.config.security);
+    const now = Date.now();
 
     const conn: ClientConnection = {
       id,
@@ -376,6 +472,12 @@ export class MinecraftServerEngine extends EventEmitter {
       compressionThreshold: -1,
       profile: ProtocolMapper.resolveProfile(PRIMARY_PROTOCOL_VERSION),
       isBotProbe: false,
+      lastActivityAt: now,
+      openedAt: now,
+      rxBytes: 0,
+      txBytes: 0,
+      configPacksSent: false,
+      configRegistriesSent: false,
       closed: false,
       processingQueue: Promise.resolve(),
     };
@@ -389,12 +491,14 @@ export class MinecraftServerEngine extends EventEmitter {
     }
 
     this.connections.set(id, conn);
+    this.log('Network', `TCP connection accepted: ${id} from ${cleanIp}`, 'PROTOCOL');
     return conn;
   }
 
-  // Crash-Proof Packet Shield: isolates malformed buffers, invalid VarInts, Zlib errors, and handler exceptions
   private handleSocketData(conn: ClientConnection, chunk: Buffer): void {
     if (conn.closed) return;
+    conn.lastActivityAt = Date.now();
+    conn.rxBytes += chunk.length;
 
     conn.processingQueue = conn.processingQueue
       .then(async () => {
@@ -483,7 +587,6 @@ export class MinecraftServerEngine extends EventEmitter {
     packetName: string,
     payload: Buffer
   ): Promise<void> {
-    // Allow plugins to inspect or cancel any packet
     const pluginEvt = {
       connectionId: conn.id,
       player: conn.player ? this.toPluginPlayer(conn.player) : undefined,
@@ -538,7 +641,7 @@ export class MinecraftServerEngine extends EventEmitter {
         }
         this.log(
           'Protocol',
-          `Handshake from ${conn.socket.remoteAddress} -> proto=${protocolVersion} (${conn.profile.label}), addr=${serverAddress}:${serverPort}, next=${conn.state}`,
+          `Handshake ${conn.id} (${normalizeIp(conn.socket.remoteAddress)}) -> proto=${protocolVersion} (${conn.profile.label}), addr=${serverAddress}:${serverPort}, next=${conn.state}`,
           'PROTOCOL'
         );
       }
@@ -550,10 +653,23 @@ export class MinecraftServerEngine extends EventEmitter {
         const sample = Array.from(this.players.values())
           .slice(0, 12)
           .map((p) => ({ name: p.username, id: p.uuid }));
+        const viaActive = this.pluginManager
+          .getMetadataList()
+          .some((p) => p.name === 'ViaBackwards' && p.enabled);
+        // Echo client's supported protocol version so 1.21-26.3 clients show green ping bars!
+        const advertisedProtocol =
+          viaActive && ProtocolMapper.isSupported(conn.profile.protocolVersion)
+            ? conn.profile.protocolVersion
+            : PRIMARY_PROTOCOL_VERSION;
+        const advertisedName =
+          advertisedProtocol === PRIMARY_PROTOCOL_VERSION
+            ? PRIMARY_MINECRAFT_VERSION
+            : `${PRIMARY_MINECRAFT_VERSION} (${SUPPORTED_RANGE_LABEL})`;
+
         const statusJson = JSON.stringify({
           version: {
-            name: PRIMARY_MINECRAFT_VERSION,
-            protocol: PRIMARY_PROTOCOL_VERSION,
+            name: advertisedName,
+            protocol: advertisedProtocol,
           },
           players: {
             max: this.config.maxPlayers,
@@ -585,7 +701,6 @@ export class MinecraftServerEngine extends EventEmitter {
         }
         const resolvedUuid = this.config.onlineMode && clientUuid ? clientUuid : offlineUuid(username);
 
-        // Check bans & player cap
         const banned = this.bans.find(
           (b) => b.username.toLowerCase() === username.toLowerCase() || b.uuid === resolvedUuid
         );
@@ -612,18 +727,20 @@ export class MinecraftServerEngine extends EventEmitter {
           conn.compressionThreshold = this.config.compressionThreshold;
         }
 
-        // 2. Send Login Success (UUID + Username + 0 properties + optional strictErrorHandling for 1.21)
+        // 2. Send Login Success
         const successWriter = new PacketWriter()
           .writeUUID(resolvedUuid)
           .writeString(username)
           .writeVarInt(0);
         if (conn.profile.hasStrictLoginSuccessFlag) {
           successWriter.writeBoolean(false);
+        } else if (conn.profile.hasSessionIdInLoginSuccess) {
+          successWriter.writeUUID(resolvedUuid);
         }
         this.sendPacket(conn, conn.profile.clientbound.LOGIN.login_success, successWriter.toBuffer());
         this.log('Login', `${username} (${resolvedUuid}) authenticated via ${conn.profile.label}`, 'INFO');
       } else if (packetId === 0x03) {
-        // Login Acknowledged -> Configuration State
+        // Login Acknowledged -> Enter Configuration State immediately (no deadlock!)
         conn.state = 'CONFIGURATION';
         this.beginConfigurationPhase(conn);
       }
@@ -632,20 +749,47 @@ export class MinecraftServerEngine extends EventEmitter {
 
     if (conn.state === 'CONFIGURATION') {
       if (packetName === 'client_information') {
-        // Acknowledge known packs matching client protocol version
-        const kp = new PacketWriter()
-          .writeVarInt(1)
-          .writeString('minecraft')
-          .writeString('core')
-          .writeString(conn.profile.knownPackVersion);
-        this.sendPacket(conn, conn.profile.clientbound.CONFIGURATION.select_known_packs, kp.toBuffer());
+        // Store / accept client settings without blocking Known Packs
+        if (!conn.configPacksSent) {
+          this.beginConfigurationPhase(conn);
+        }
+      } else if (packetName === 'keep_alive') {
+        if (reader.remaining >= 8) {
+          reader.readLong();
+        }
       } else if (packetName === 'select_known_packs') {
-        this.sendConfigurationRegistries(conn);
-        // Send Finish Configuration
+        if (conn.configRegistriesSent) return;
+        conn.configRegistriesSent = true;
+
+        let matchedCorePack = false;
+        try {
+          const count = reader.readVarInt();
+          for (let i = 0; i < count; i++) {
+            const ns = reader.readString(256);
+            const id = reader.readString(256);
+            reader.readString(256); // version
+            if (ns === 'minecraft' && id === 'core') {
+              matchedCorePack = true;
+            }
+          }
+        } catch {
+          matchedCorePack = false;
+        }
+
+        this.log(
+          'Config',
+          `${conn.username ?? conn.id} (${conn.profile.label}): known_packs matchedCore=${matchedCorePack}`,
+          'PROTOCOL'
+        );
+
+        this.sendConfigurationRegistries(conn, matchedCorePack);
+        this.sendConfigurationTags(conn);
         this.sendPacket(conn, conn.profile.clientbound.CONFIGURATION.finish_configuration, Buffer.alloc(0));
       } else if (packetName === 'finish_configuration') {
         conn.state = 'PLAY';
         await this.enterPlayPhase(conn);
+      } else if (packetName === 'accept_code_of_conduct' || packetName === 'resource_pack' || packetName === 'pong') {
+        return;
       }
       return;
     }
@@ -653,12 +797,15 @@ export class MinecraftServerEngine extends EventEmitter {
     if (conn.state === 'PLAY' && conn.player) {
       const player = conn.player;
 
-      if (packetName === 'confirm_teleportation') {
-        if (reader.remaining > 0) reader.readVarInt();
-        return;
-      }
-
-      if (packetName === 'client_tick_end') {
+      if (
+        packetName === 'confirm_teleportation' ||
+        packetName === 'client_tick_end' ||
+        packetName === 'chunk_batch_received' ||
+        packetName === 'player_loaded' ||
+        packetName === 'client_information' ||
+        packetName === 'container_close' ||
+        packetName === 'chat_session_update'
+      ) {
         return;
       }
 
@@ -667,6 +814,61 @@ export class MinecraftServerEngine extends EventEmitter {
         if (conn.lastKeepAliveId === id && conn.lastKeepAliveSentAt) {
           player.ping = Math.max(1, Date.now() - conn.lastKeepAliveSentAt);
           this.emitPlayers();
+        }
+        return;
+      }
+
+      if (packetName === 'client_command') {
+        const actionId = reader.readVarInt();
+        if (actionId === 0) {
+          // Perform Respawn
+          player.health = 20;
+          player.food = 20;
+          this.sendRespawnPacket(player);
+          this.sendPlayerHealth(player);
+          this.teleportPlayer(player, 0.5, 64.0, 0.5, 0, 0);
+          this.sendPlayerChat(player, 'Respawned at world spawn.');
+        }
+        return;
+      }
+
+      if (packetName === 'set_carried_item') {
+        const slot = reader.readShort();
+        if (slot >= 0 && slot <= 8) {
+          player.selectedSlot = slot;
+        }
+        return;
+      }
+
+      if (packetName === 'swing') {
+        const hand = reader.remaining >= 1 ? reader.readVarInt() : 0;
+        const animType = hand === 1 ? 3 : 0; // 0 = main hand swing, 3 = offhand swing
+        const animPayload = new PacketWriter().writeVarInt(player.entityId).writeUByte(animType).toBuffer();
+        for (const other of this.players.values()) {
+          if (other.uuid !== player.uuid) {
+            this.sendPacket(other.connection, other.connection.profile.clientbound.PLAY.animate, animPayload);
+          }
+        }
+        return;
+      }
+
+      if (packetName === 'player_abilities') {
+        if (reader.remaining >= 1) {
+          const flags = reader.readByte();
+          player.isFlying = (flags & 0x02) !== 0;
+          this.emitPlayers();
+        }
+        return;
+      }
+
+      if (packetName === 'player_command') {
+        if (reader.remaining >= 2) {
+          reader.readVarInt(); // entityId
+          const actionId = reader.readVarInt();
+          if (actionId === 0) player.sneaking = true;
+          else if (actionId === 1) player.sneaking = false;
+          else if (actionId === 3) player.sprinting = true;
+          else if (actionId === 4) player.sprinting = false;
         }
         return;
       }
@@ -705,7 +907,7 @@ export class MinecraftServerEngine extends EventEmitter {
           nextPitch = reader.readFloat();
         }
         if (reader.remaining >= 1) {
-          reader.readUByte(); // onGround / flags byte (1.21.2+ has bitflags, 1.21 has onGround boolean)
+          reader.readUByte();
         }
 
         const moveEvt = {
@@ -734,28 +936,37 @@ export class MinecraftServerEngine extends EventEmitter {
       if (packetName === 'player_action') {
         const status = reader.readVarInt();
         const pos = reader.readPosition();
-        // status 0 = started digging, 2 = finished digging
-        if (status === 0 || status === 2) {
+        if (reader.remaining >= 1) reader.readByte(); // face
+        const sequence = reader.remaining >= 1 ? reader.readVarInt() : 0;
+
+        // status 0 = started digging (instant in creative), 2 = finished digging
+        const isCreativeBreak = status === 0 && player.gamemode === 'creative';
+        if (status === 2 || isCreativeBreak) {
           const currentBlock = this.world.getBlock(pos.x, pos.y, pos.z);
-          if (currentBlock !== 0) {
-            const breakEvt = {
-              player: this.toPluginPlayer(player),
-              x: pos.x,
-              y: pos.y,
-              z: pos.z,
-              blockStateId: currentBlock,
-              cancel: false,
-            };
-            await this.pluginManager.emitBlockBreak(breakEvt);
-            if (!breakEvt.cancel) {
-              this.world.setBlock(pos.x, pos.y, pos.z, 0);
-              this.broadcastBlockUpdate(pos.x, pos.y, pos.z, 0);
-              this.log('World', `${player.username} broke block at (${pos.x}, ${pos.y}, ${pos.z})`, 'INFO');
-            } else {
+          if (currentBlock !== BLOCK_IDS.AIR) {
+            if (pos.y <= 0 && currentBlock === BLOCK_IDS.BEDROCK && player.gamemode !== 'creative') {
               this.broadcastBlockUpdate(pos.x, pos.y, pos.z, currentBlock);
+            } else {
+              const breakEvt = {
+                player: this.toPluginPlayer(player),
+                x: pos.x,
+                y: pos.y,
+                z: pos.z,
+                blockStateId: currentBlock,
+                cancel: false,
+              };
+              await this.pluginManager.emitBlockBreak(breakEvt);
+              if (!breakEvt.cancel) {
+                this.world.setBlock(pos.x, pos.y, pos.z, BLOCK_IDS.AIR);
+                this.broadcastBlockUpdate(pos.x, pos.y, pos.z, BLOCK_IDS.AIR);
+                this.log('World', `${player.username} broke block at (${pos.x}, ${pos.y}, ${pos.z})`, 'INFO');
+              } else {
+                this.broadcastBlockUpdate(pos.x, pos.y, pos.z, currentBlock);
+              }
             }
           }
         }
+        this.sendBlockChangedAck(conn, sequence);
         return;
       }
 
@@ -763,6 +974,17 @@ export class MinecraftServerEngine extends EventEmitter {
         reader.readVarInt(); // hand
         const pos = reader.readPosition();
         const face = reader.readVarInt();
+        if (reader.remaining >= 13) {
+          reader.readFloat(); // cursorX
+          reader.readFloat(); // cursorY
+          reader.readFloat(); // cursorZ
+          reader.readBoolean(); // insideBlock
+          if (conn.profile.hasWorldBorderHitInBlockPlace && reader.remaining >= 1) {
+            reader.readBoolean(); // worldBorderHit
+          }
+        }
+        const sequence = reader.remaining >= 1 ? reader.readVarInt() : 0;
+
         const offsets = [
           [0, -1, 0],
           [0, 1, 0],
@@ -775,37 +997,238 @@ export class MinecraftServerEngine extends EventEmitter {
         const tx = pos.x + dx;
         const ty = pos.y + dy;
         const tz = pos.z + dz;
-        this.world.setBlock(tx, ty, tz, 14); // oak_planks
-        this.broadcastBlockUpdate(tx, ty, tz, 14);
-        this.log('World', `${player.username} placed oak_planks at (${tx}, ${ty}, ${tz})`, 'INFO');
+        if (ty >= -64 && ty <= 319) {
+          const blockState = player.hotbarBlocks[player.selectedSlot] ?? BLOCK_IDS.OAK_PLANKS;
+          this.world.setBlock(tx, ty, tz, blockState);
+          this.broadcastBlockUpdate(tx, ty, tz, blockState);
+          this.log('World', `${player.username} placed block (${blockState}) at (${tx}, ${ty}, ${tz})`, 'INFO');
+        }
+        this.sendBlockChangedAck(conn, sequence);
       }
     }
   }
 
   private beginConfigurationPhase(conn: ClientConnection): void {
-    // Send server brand via Custom Payload
+    if (conn.configPacksSent) return;
+    conn.configPacksSent = true;
+
+    // 1. Send server brand via Custom Payload (0x01)
     const brand = new PacketWriter().writeString('minecraft:brand').writeString('AetherCore 26.3');
     this.sendPacket(conn, conn.profile.clientbound.CONFIGURATION.custom_payload, brand.toBuffer());
+
+    // 2. Send Feature Flags (0x0C): minecraft:vanilla
+    const features = new PacketWriter().writeVarInt(1).writeString('minecraft:vanilla');
+    this.sendPacket(conn, conn.profile.clientbound.CONFIGURATION.feature_flags, features.toBuffer());
+
+    // 3. Immediately offer ALL matching minecraft:core known packs for this protocol so client matches cleanly
+    const candidates = conn.profile.knownPackCandidates;
+    const kp = new PacketWriter().writeVarInt(candidates.length);
+    for (const ver of candidates) {
+      kp.writeString('minecraft').writeString('core').writeString(ver);
+    }
+    this.sendPacket(conn, conn.profile.clientbound.CONFIGURATION.select_known_packs, kp.toBuffer());
   }
 
-  private sendConfigurationRegistries(conn: ClientConnection): void {
-    const registries: Array<{ id: string; entries: string[] }> = [
+  private writeRegistryEntryNbt(
+    w: PacketWriter,
+    registryId: string,
+    entryId: string,
+    proto: number = PRIMARY_PROTOCOL_VERSION
+  ): void {
+    w.writeNbtCompoundStart();
+    if (registryId === 'minecraft:dimension_type') {
+      w.writeNbtBoolean('ultrawarm', false);
+      w.writeNbtBoolean('natural', true);
+      w.writeNbtBoolean('piglin_safe', false);
+      w.writeNbtBoolean('respawn_anchor_works', false);
+      w.writeNbtBoolean('bed_works', true);
+      w.writeNbtBoolean('has_raids', true);
+      w.writeNbtBoolean('has_skylight', true);
+      w.writeNbtBoolean('has_ceiling', false);
+      w.writeNbtDouble('coordinate_scale', 1.0);
+      w.writeNbtFloat('ambient_light', 0.0);
+      w.writeNbtInt('logical_height', 384);
+      w.writeNbtString('infiniburn', '#minecraft:infiniburn_overworld');
+      w.writeNbtInt('min_y', -64);
+      w.writeNbtInt('height', 384);
+      w.writeNbtString('effects', 'minecraft:overworld');
+      w.writeNbtInt('monster_spawn_light_level', 0);
+      w.writeNbtInt('monster_spawn_block_light_limit', 0);
+    } else if (registryId === 'minecraft:worldgen/biome') {
+      w.writeNbtBoolean('has_precipitation', true);
+      w.writeNbtFloat('temperature', 0.8);
+      w.writeNbtFloat('downfall', 0.4);
+      w.writeNbtCompoundStart('effects');
+      w.writeNbtInt('sky_color', 7907327);
+      w.writeNbtInt('water_fog_color', 329011);
+      w.writeNbtInt('fog_color', 12638463);
+      w.writeNbtInt('water_color', 4159204);
+      w.writeNbtEnd();
+    } else if (registryId === 'minecraft:chat_type') {
+      w.writeNbtCompoundStart('chat');
+      w.writeNbtString('translation_key', 'chat.type.text');
+      w.writeNbtListStart('parameters', 8, 2);
+      w.writeNbtAnonymousString('sender');
+      w.writeNbtAnonymousString('content');
+      w.writeNbtEnd();
+      w.writeNbtCompoundStart('narration');
+      w.writeNbtString('translation_key', 'chat.type.text.narrate');
+      w.writeNbtListStart('parameters', 8, 2);
+      w.writeNbtAnonymousString('sender');
+      w.writeNbtAnonymousString('content');
+      w.writeNbtEnd();
+    } else if (registryId === 'minecraft:damage_type') {
+      const msg = entryId.replace('minecraft:', '');
+      w.writeNbtString('message_id', msg);
+      w.writeNbtString('scaling', 'when_caused_by_living_non_player');
+      w.writeNbtFloat('exhaustion', 0.1);
+    } else if (registryId === 'minecraft:painting_variant') {
+      w.writeNbtString('asset_id', 'minecraft:kebab');
+      w.writeNbtInt('width', 1);
+      w.writeNbtInt('height', 1);
+    } else if (registryId === 'minecraft:wolf_variant') {
+      w.writeNbtCompoundStart('assets');
+      w.writeNbtString('wild', 'minecraft:entity/wolf/wolf');
+      w.writeNbtString('tame', 'minecraft:entity/wolf/wolf_tame');
+      w.writeNbtString('angry', 'minecraft:entity/wolf/wolf_angry');
+      w.writeNbtEnd();
+      if (proto >= 775) {
+        w.writeNbtCompoundStart('baby_assets');
+        w.writeNbtString('wild', 'minecraft:entity/wolf/wolf_baby');
+        w.writeNbtString('tame', 'minecraft:entity/wolf/wolf_tame_baby');
+        w.writeNbtString('angry', 'minecraft:entity/wolf/wolf_angry_baby');
+        w.writeNbtEnd();
+      }
+      w.writeNbtString('wild_texture', 'minecraft:entity/wolf/wolf');
+      w.writeNbtString('tame_texture', 'minecraft:entity/wolf/wolf_tame');
+      w.writeNbtString('angry_texture', 'minecraft:entity/wolf/wolf_angry');
+      w.writeNbtString('biomes', 'minecraft:plains');
+    } else if (registryId === 'minecraft:wolf_sound_variant') {
+      w.writeNbtString('ambient_sound', 'minecraft:entity.wolf.ambient');
+      w.writeNbtString('death_sound', 'minecraft:entity.wolf.death');
+      w.writeNbtString('growl_sound', 'minecraft:entity.wolf.growl');
+      w.writeNbtString('hurt_sound', 'minecraft:entity.wolf.hurt');
+      w.writeNbtString('pant_sound', 'minecraft:entity.wolf.pant');
+      w.writeNbtString('whine_sound', 'minecraft:entity.wolf.whine');
+    } else if (registryId === 'minecraft:world_clock') {
+      // Empty compound defines a basic World Clock in 26.1+
+    } else if (registryId === 'minecraft:timeline') {
+      w.writeNbtString('clock', 'minecraft:overworld');
+    } else if (registryId === 'minecraft:decorated_pot_pattern') {
+      const shortName = entryId.replace('minecraft:', '');
+      w.writeNbtString('asset_id', `minecraft:${shortName}_pottery_pattern`);
+    } else if (registryId.endsWith('_sound_variant')) {
+      const animal = registryId.replace('minecraft:', '').replace('_sound_variant', '');
+      w.writeNbtString('ambient_sound', `minecraft:entity.${animal}.ambient`);
+      w.writeNbtString('death_sound', `minecraft:entity.${animal}.death`);
+      w.writeNbtString('hurt_sound', `minecraft:entity.${animal}.hurt`);
+      w.writeNbtString('step_sound', `minecraft:entity.${animal}.step`);
+    } else {
+      const shortName = entryId.replace('minecraft:', '');
+      const mob = registryId.replace('minecraft:', '').replace('_variant', '');
+      w.writeNbtString('asset_id', `minecraft:entity/${mob}/${shortName}`);
+    }
+    w.writeNbtEnd();
+  }
+
+  private sendConfigurationRegistries(conn: ClientConnection, matchedCorePack: boolean): void {
+    const proto = conn.profile.protocolVersion;
+    const registries: Array<{ id: string; entries: string[]; inlineOnly?: boolean }> = [
       { id: 'minecraft:dimension_type', entries: ['minecraft:overworld'] },
-      { id: 'minecraft:biome', entries: ['minecraft:plains'] },
+      { id: 'minecraft:worldgen/biome', entries: ['minecraft:plains'] },
       { id: 'minecraft:chat_type', entries: ['minecraft:chat'] },
-      { id: 'minecraft:damage_type', entries: ['minecraft:generic', 'minecraft:out_of_world'] },
+      {
+        id: 'minecraft:damage_type',
+        entries: [
+          'minecraft:generic',
+          'minecraft:out_of_world',
+          'minecraft:fall',
+          'minecraft:player_attack',
+          'minecraft:in_fire',
+          'minecraft:drown',
+          'minecraft:starve',
+          'minecraft:generic_kill',
+          ...(proto >= 774 ? ['minecraft:spear'] : []),
+        ],
+      },
       { id: 'minecraft:wolf_variant', entries: ['minecraft:pale'] },
       { id: 'minecraft:painting_variant', entries: ['minecraft:kebab'] },
     ];
+
+    if (proto >= 770) {
+      // Required non-empty entity variant registries introduced in 1.21.5+
+      registries.push(
+        { id: 'minecraft:pig_variant', entries: ['minecraft:temperate'] },
+        { id: 'minecraft:cow_variant', entries: ['minecraft:temperate'] },
+        { id: 'minecraft:chicken_variant', entries: ['minecraft:temperate'] },
+        { id: 'minecraft:frog_variant', entries: ['minecraft:temperate'] },
+        { id: 'minecraft:cat_variant', entries: ['minecraft:tabby'] },
+        { id: 'minecraft:wolf_sound_variant', entries: ['minecraft:classic'] }
+      );
+    }
+
+    if (proto >= 774) {
+      // Added in 1.21.11+
+      registries.push(
+        { id: 'minecraft:zombie_nautilus_variant', entries: ['minecraft:temperate'] },
+        { id: 'minecraft:timeline', entries: ['minecraft:day', 'minecraft:early_game', 'minecraft:moon', 'minecraft:villager_schedule'] }
+      );
+    }
+
+    if (proto >= 775) {
+      // Added in 26.1+ (World Clocks & Livestock Sound Variants)
+      registries.push(
+        { id: 'minecraft:world_clock', entries: ['minecraft:overworld', 'minecraft:the_end'], inlineOnly: true },
+        { id: 'minecraft:pig_sound_variant', entries: ['minecraft:classic'] },
+        { id: 'minecraft:cat_sound_variant', entries: ['minecraft:classic'] },
+        { id: 'minecraft:cow_sound_variant', entries: ['minecraft:classic'] },
+        { id: 'minecraft:chicken_sound_variant', entries: ['minecraft:classic'] }
+      );
+    }
+
+    if (proto >= 777) {
+      // Added in 26.3
+      registries.push({ id: 'minecraft:decorated_pot_pattern', entries: ['minecraft:angler'] });
+    }
 
     for (const reg of registries) {
       const w = new PacketWriter().writeString(reg.id).writeVarInt(reg.entries.length);
       for (const entryId of reg.entries) {
         w.writeString(entryId);
-        w.writeBoolean(false); // no extra NBT override needed for minimal core pack
+        if (matchedCorePack && !reg.inlineOnly) {
+          w.writeBoolean(false); // Client loads exact version-native NBT from matched minecraft:core pack
+        } else {
+          w.writeBoolean(true);
+          this.writeRegistryEntryNbt(w, reg.id, entryId, proto);
+        }
       }
       this.sendPacket(conn, conn.profile.clientbound.CONFIGURATION.registry_data, w.toBuffer());
     }
+  }
+
+  private sendConfigurationTags(conn: ClientConnection): void {
+    // Send vanilla fluid tags (IDs 1..4 are stable across 1.13-26.3) + empty block infiniburn tags
+    const w = new PacketWriter()
+      .writeVarInt(2) // 2 registry tag groups
+      .writeString('minecraft:fluid')
+      .writeVarInt(2)
+      .writeString('minecraft:water')
+      .writeVarInt(2)
+      .writeVarInt(1)
+      .writeVarInt(2)
+      .writeString('minecraft:lava')
+      .writeVarInt(2)
+      .writeVarInt(3)
+      .writeVarInt(4)
+      .writeString('minecraft:block')
+      .writeVarInt(3)
+      .writeString('minecraft:infiniburn_overworld')
+      .writeVarInt(0)
+      .writeString('minecraft:infiniburn_nether')
+      .writeVarInt(0)
+      .writeString('minecraft:infiniburn_end')
+      .writeVarInt(0);
+    this.sendPacket(conn, conn.profile.clientbound.CONFIGURATION.update_tags, w.toBuffer());
   }
 
   private async enterPlayPhase(conn: ClientConnection): Promise<void> {
@@ -836,6 +1259,10 @@ export class MinecraftServerEngine extends EventEmitter {
       connectedAt: Date.now(),
       isBotProbe: conn.isBotProbe,
       connection: conn,
+      selectedSlot: 0,
+      hotbarBlocks: [...DEFAULT_HOTBAR_BLOCKS],
+      sneaking: false,
+      sprinting: false,
     };
 
     conn.entityId = entityId;
@@ -864,35 +1291,62 @@ export class MinecraftServerEngine extends EventEmitter {
       .writeBoolean(false) // hasDeathLocation
       .writeVarInt(0); // portalCooldown
     if (conn.profile.hasSeaLevelInLoginPlay) {
-      loginPlay.writeVarInt(63); // seaLevel added in 1.21.2 (protocol 768+)
+      loginPlay.writeVarInt(63);
     }
-    loginPlay.writeBoolean(false); // enforcesSecureChat (required in 1.20.5+ / 767-777)
+    loginPlay.writeBoolean(false); // enforcesSecureChat
     this.sendPacket(conn, conn.profile.clientbound.PLAY.login_play, loginPlay.toBuffer());
 
-    // 2. Game Event (13 = Start waiting for level chunks)
+    // 2. Sync Difficulty (Normal = 2, unlocked) & Abilities & Held Slot
+    const diff = new PacketWriter().writeUByte(2).writeBoolean(false);
+    this.sendPacket(conn, conn.profile.clientbound.PLAY.change_difficulty, diff.toBuffer());
+
+    this.sendPlayerAbilities(player);
+
+    const heldSlot = new PacketWriter();
+    if (conn.profile.hasByteHeldSlot) {
+      heldSlot.writeByte(0);
+    } else {
+      heldSlot.writeVarInt(0);
+    }
+    this.sendPacket(conn, conn.profile.clientbound.PLAY.set_held_slot, heldSlot.toBuffer());
+
+    // 3. Sync World Time (767-777)
+    this.sendWorldTimeTo(conn);
+
+    // 4. Set Default Spawn Position (Format changed in 1.21.9 / Proto 773+)
+    this.sendDefaultSpawnPositionTo(conn, 0, 64, 0);
+
+    // 5. Game Event (13 = Start waiting for level chunks) & Chunk Cache Center
     const gameEvt = new PacketWriter().writeUByte(13).writeFloat(0);
     this.sendPacket(conn, conn.profile.clientbound.PLAY.game_event, gameEvt.toBuffer());
-
-    // 3. Set Default Spawn Position & Chunk Cache Center
-    const spawnPos = new PacketWriter().writePosition(0, 64, 0).writeFloat(0);
-    this.sendPacket(conn, conn.profile.clientbound.PLAY.set_default_spawn_position, spawnPos.toBuffer());
 
     const chunkCenter = new PacketWriter().writeVarInt(0).writeVarInt(0);
     this.sendPacket(conn, conn.profile.clientbound.PLAY.set_chunk_cache_center, chunkCenter.toBuffer());
 
-    // 4. Stream surrounding chunks so player never falls into the void
+    // 6. Stream surrounding chunks wrapped in Chunk Batch Start / Finished (Required by 1.20.2+!)
     const radius = Math.min(3, this.config.viewDistance);
+    const totalChunks = (radius * 2 + 1) * (radius * 2 + 1);
+    this.sendPacket(conn, conn.profile.clientbound.PLAY.chunk_batch_start, Buffer.alloc(0));
     for (let cx = -radius; cx <= radius; cx++) {
       for (let cz = -radius; cz <= radius; cz++) {
-        const chunkPayload = this.world.buildChunkPacketPayload(cx, cz, conn.profile.usesFlatHeightmaps);
+        const chunkPayload = this.world.buildChunkPacketPayload(
+          cx,
+          cz,
+          conn.profile.usesFlatHeightmaps,
+          conn.profile.omitPaletteDataLength,
+          conn.profile.protocolVersion
+        );
         this.sendPacket(conn, conn.profile.clientbound.PLAY.level_chunk_with_light, chunkPayload);
       }
     }
+    const batchEnd = new PacketWriter().writeVarInt(totalChunks);
+    this.sendPacket(conn, conn.profile.clientbound.PLAY.chunk_batch_finished, batchEnd.toBuffer());
 
-    // 5. Synchronize Player Position (y=64 above grass at y=63)
+    // 7. Synchronize Player Position (y=64 above grass at y=63) & Health
     this.sendSynchronizePosition(player);
+    this.sendPlayerHealth(player);
 
-    // 6. Broadcast join to existing players & sync existing players to joiner
+    // 8. Broadcast join to existing players & sync existing players to joiner
     this.broadcastPlayerInfoAdd(player);
     for (const other of this.players.values()) {
       if (other.uuid !== player.uuid) {
@@ -903,8 +1357,62 @@ export class MinecraftServerEngine extends EventEmitter {
     }
 
     this.log('Join', `${player.username} joined the game at (0.5, 64.0, 0.5) [${player.clientVersionLabel}]`, 'INFO');
+    this.sendPlayerChat(
+      player,
+      `Welcome to AetherCore 26.3 (${player.clientVersionLabel})! Type /help for commands.`
+    );
     this.emitPlayers();
     await this.pluginManager.emitPlayerJoin(this.toPluginPlayer(player));
+  }
+
+  private sendDefaultSpawnPositionTo(conn: ClientConnection, x: number, y: number, z: number): void {
+    const w = new PacketWriter();
+    if (conn.profile.hasGlobalPosInSpawnPosition) {
+      // 1.21.9+ (773-777): GlobalPos(dimension String + BlockPos) + yaw Float + pitch Float
+      w.writeString('minecraft:overworld').writePosition(x, y, z).writeFloat(0).writeFloat(0);
+    } else {
+      // 1.21 - 1.21.8 (767-772): BlockPos + angle Float
+      w.writePosition(x, y, z).writeFloat(0);
+    }
+    this.sendPacket(conn, conn.profile.clientbound.PLAY.set_default_spawn_position, w.toBuffer());
+  }
+
+  private sendWorldTimeTo(conn: ClientConnection): void {
+    if (conn.closed || conn.state !== 'PLAY') return;
+    const w = new PacketWriter().writeLong(this.world.getWorldAge());
+    if (conn.profile.usesWorldClocksInSetTime) {
+      // 26.1+ (775-777): array of WorldClock updates referencing registered minecraft:overworld clock (id=0)
+      w.writeVarInt(1)
+        .writeVarInt(0)
+        .writeVarLong(this.world.getTimeOfDay())
+        .writeFloat(0)
+        .writeFloat(1);
+    } else {
+      w.writeLong(this.world.getTimeOfDay());
+      if (conn.profile.hasTickDayTimeInSetTime) {
+        w.writeBoolean(true);
+      }
+    }
+    this.sendPacket(conn, conn.profile.clientbound.PLAY.set_time, w.toBuffer());
+  }
+
+  private sendRespawnPacket(player: InternalPlayer): void {
+    const conn = player.connection;
+    const w = new PacketWriter()
+      .writeVarInt(0) // dimensionType
+      .writeString('minecraft:overworld')
+      .writeLong(0n) // hashedSeed
+      .writeUByte(this.gameModeToByte(player.gamemode))
+      .writeByte(-1) // previousGamemode
+      .writeBoolean(false) // isDebug
+      .writeBoolean(this.config.worldType === 'superflat')
+      .writeBoolean(false) // hasDeathLocation
+      .writeVarInt(0); // portalCooldown
+    if (conn.profile.hasSeaLevelInLoginPlay) {
+      w.writeVarInt(63);
+    }
+    w.writeUByte(0x00); // dataKept flags
+    this.sendPacket(conn, conn.profile.clientbound.PLAY.respawn, w.toBuffer());
   }
 
   private async handlePlayerChat(player: InternalPlayer, message: string): Promise<void> {
@@ -947,7 +1455,6 @@ export class MinecraftServerEngine extends EventEmitter {
       this.log('Command', `${sender.username} issued server command: /${clean}`, 'INFO');
     }
 
-    // Check plugins first (allows hot-reloaded commands like /fly, /tp, /gamemode, /heal, /plugins)
     const handledByPlugin = await this.pluginManager.dispatchCommand({
       sender,
       command,
@@ -959,16 +1466,99 @@ export class MinecraftServerEngine extends EventEmitter {
       return replies.join('\n');
     }
 
-    // Built-in core server commands
     switch (command) {
       case 'help': {
-        reply('Core commands: /help, /list, /say <msg>, /kick <player> [reason], /op <player>, /deop <player>, /ban <player> [reason], /reload, /stop');
-        reply('Plugin commands: /fly, /tp, /gamemode, /heal, /plugins');
+        reply('Core commands: /help, /list, /spawn, /give <block>, /time <day|night|noon|ticks>, /world <superflat|void>, /kill [player], /say <msg>, /kick, /op, /deop, /ban, /reload, /stop');
+        reply('Plugin commands: /fly, /tp, /gamemode, /heal, /plugins, /viabackwards');
+        break;
+      }
+      case 'give': {
+        if (sender === 'CONSOLE') {
+          reply('Only in-game players can use /give.');
+          break;
+        }
+        const rawBlock = (args[0] ?? '').replace(/^minecraft:/, '').toLowerCase();
+        const blockLookup: Record<string, number> = {
+          stone: BLOCK_IDS.STONE,
+          oak_planks: BLOCK_IDS.OAK_PLANKS,
+          cobblestone: BLOCK_IDS.COBBLESTONE,
+          grass_block: BLOCK_IDS.GRASS_BLOCK,
+          dirt: BLOCK_IDS.DIRT,
+          glass: BLOCK_IDS.GLASS,
+          bedrock: BLOCK_IDS.BEDROCK,
+        };
+        const chosen = blockLookup[rawBlock];
+        if (chosen === undefined) {
+          reply('Available blocks: stone, oak_planks, cobblestone, grass_block, dirt, glass, bedrock');
+          break;
+        }
+        const live = this.findPlayerByName(sender.username);
+        if (live) {
+          live.hotbarBlocks[live.selectedSlot] = chosen;
+          reply(`Bound placement slot #${live.selectedSlot + 1} to minecraft:${rawBlock}.`);
+        }
         break;
       }
       case 'list': {
         const names = Array.from(this.players.values()).map((p) => p.username);
         reply(`Online (${names.length}/${this.config.maxPlayers}): ${names.join(', ') || 'None'}`);
+        break;
+      }
+      case 'spawn': {
+        if (sender === 'CONSOLE') {
+          reply('Only in-game players can use /spawn.');
+          break;
+        }
+        sender.teleport(0.5, 64.0, 0.5, 0, 0);
+        reply('Teleported to world spawn (0.5, 64.0, 0.5).');
+        break;
+      }
+      case 'time': {
+        const sub = (args[0] ?? 'query').toLowerCase();
+        if (sub === 'query') {
+          reply(`World time: ${this.world.getTimeOfDay().toString()} ticks (Age: ${this.world.getWorldAge().toString()})`);
+        } else {
+          const valArg = (sub === 'set' ? args[1] : args[0])?.toLowerCase();
+          const presets: Record<string, bigint> = {
+            day: 1000n,
+            noon: 6000n,
+            sunset: 12000n,
+            night: 13000n,
+            midnight: 18000n,
+          };
+          const parsed = valArg ? (presets[valArg] ?? (/^-?\d+$/.test(valArg) ? BigInt(valArg) : undefined)) : undefined;
+          if (parsed === undefined) {
+            reply('Usage: /time set <day|noon|night|midnight|ticks>');
+          } else {
+            this.world.setTimeOfDay(parsed);
+            for (const p of this.players.values()) {
+              this.sendWorldTimeTo(p.connection);
+            }
+            reply(`Set world time to ${this.world.getTimeOfDay().toString()} ticks.`);
+          }
+        }
+        break;
+      }
+      case 'world': {
+        const mode = (args[0] ?? '').toLowerCase();
+        if (mode !== 'superflat' && mode !== 'void') {
+          reply(`Current world type: ${this.config.worldType}. Usage: /world <superflat|void>`);
+          break;
+        }
+        await this.updateConfig({ worldType: mode });
+        reply(`World type switched to ${mode}. Reconnecting or moving chunks will stream updated chunks.`);
+        break;
+      }
+      case 'kill': {
+        const targetName = args[0] ?? (sender !== 'CONSOLE' ? sender.username : undefined);
+        const target = targetName ? this.findPlayerByName(targetName) : undefined;
+        if (!target) {
+          reply('Player not found.');
+          break;
+        }
+        target.health = 0;
+        this.sendPlayerHealth(target);
+        reply(`Killed ${target.username}.`);
         break;
       }
       case 'say': {
@@ -1107,10 +1697,10 @@ export class MinecraftServerEngine extends EventEmitter {
 
   private sendSynchronizePosition(player: InternalPlayer): void {
     const profile = player.connection.profile;
+    const tpId = this.nextTeleportId++;
     const w = new PacketWriter();
     if (profile.hasVelocityInPlayerPosition) {
-      // 1.21.2+ (Protocols 768 - 777): teleportId, pos(xyz), vel(xyz), yaw, pitch, flags(Int)
-      w.writeVarInt(1)
+      w.writeVarInt(tpId)
         .writeDouble(player.x)
         .writeDouble(player.y)
         .writeDouble(player.z)
@@ -1121,24 +1711,23 @@ export class MinecraftServerEngine extends EventEmitter {
         .writeFloat(player.pitch)
         .writeInt(0);
     } else {
-      // 1.21 / 1.21.1 (Protocol 767): pos(xyz), yaw, pitch, flags(Byte), teleportId
       w.writeDouble(player.x)
         .writeDouble(player.y)
         .writeDouble(player.z)
         .writeFloat(player.yaw)
         .writeFloat(player.pitch)
         .writeByte(0)
-        .writeVarInt(1);
+        .writeVarInt(tpId);
     }
     this.sendPacket(player.connection, profile.clientbound.PLAY.player_position, w.toBuffer());
   }
 
   private sendPlayerAbilities(player: InternalPlayer): void {
     let flags = 0;
-    if (player.gamemode === 'creative' || player.gamemode === 'spectator') flags |= 0x01; // invulnerable
-    if (player.isFlying) flags |= 0x02; // flying
-    if (player.isFlying || player.gamemode === 'creative' || player.gamemode === 'spectator') flags |= 0x04; // allow flying
-    if (player.gamemode === 'creative') flags |= 0x08; // instant break
+    if (player.gamemode === 'creative' || player.gamemode === 'spectator') flags |= 0x01;
+    if (player.isFlying) flags |= 0x02;
+    if (player.isFlying || player.gamemode === 'creative' || player.gamemode === 'spectator') flags |= 0x04;
+    if (player.gamemode === 'creative') flags |= 0x08;
 
     const w = new PacketWriter()
       .writeByte(flags)
@@ -1167,11 +1756,18 @@ export class MinecraftServerEngine extends EventEmitter {
     }
   }
 
+  private sendBlockChangedAck(conn: ClientConnection, sequence: number): void {
+    const ackId = conn.profile.clientbound.PLAY.block_changed_ack;
+    if (ackId === undefined) return;
+    const w = new PacketWriter().writeVarInt(sequence);
+    this.sendPacket(conn, ackId, w.toBuffer());
+  }
+
   private broadcastBlockUpdate(x: number, y: number, z: number, stateId: number): void {
-    const w = new PacketWriter().writePosition(x, y, z).writeVarInt(stateId);
-    const payload = w.toBuffer();
     for (const player of this.players.values()) {
-      this.sendPacket(player.connection, player.connection.profile.clientbound.PLAY.block_update, payload);
+      const resolvedState = resolveBlockStateForProtocol(stateId, player.connection.profile.protocolVersion);
+      const w = new PacketWriter().writePosition(x, y, z).writeVarInt(resolvedState);
+      this.sendPacket(player.connection, player.connection.profile.clientbound.PLAY.block_update, w.toBuffer());
     }
   }
 
@@ -1182,15 +1778,14 @@ export class MinecraftServerEngine extends EventEmitter {
   }
 
   private sendPlayerInfoAddTo(conn: ClientConnection, subject: InternalPlayer): void {
-    // Actions bitmask: 0x01 Add Player + 0x04 Update GameMode + 0x08 Update Listed + 0x10 Update Latency
     const w = new PacketWriter()
       .writeUByte(0x01 | 0x04 | 0x08 | 0x10)
       .writeVarInt(1)
       .writeUUID(subject.uuid)
       .writeString(subject.username)
-      .writeVarInt(0) // properties
+      .writeVarInt(0)
       .writeVarInt(this.gameModeToByte(subject.gamemode))
-      .writeBoolean(true) // listed
+      .writeBoolean(true)
       .writeVarInt(subject.ping);
     this.sendPacket(conn, conn.profile.clientbound.PLAY.player_info_update, w.toBuffer());
   }
@@ -1199,7 +1794,7 @@ export class MinecraftServerEngine extends EventEmitter {
     const w = new PacketWriter()
       .writeVarInt(subject.entityId)
       .writeUUID(subject.uuid)
-      .writeVarInt(128) // minecraft:player entity type
+      .writeVarInt(conn.profile.playerEntityTypeId)
       .writeDouble(subject.x)
       .writeDouble(subject.y)
       .writeDouble(subject.z)
@@ -1219,7 +1814,6 @@ export class MinecraftServerEngine extends EventEmitter {
       const profile = other.connection.profile;
       const w = new PacketWriter().writeVarInt(moved.entityId);
       if (profile.hasVelocityInPlayerPosition) {
-        // 1.21.2+ (768 - 777) Teleport Entity: entityId, x, y, z, vx, vy, vz, yaw(Float), pitch(Float), onGround(Boolean)
         w.writeDouble(moved.x)
           .writeDouble(moved.y)
           .writeDouble(moved.z)
@@ -1228,9 +1822,9 @@ export class MinecraftServerEngine extends EventEmitter {
           .writeDouble(0)
           .writeFloat(moved.yaw)
           .writeFloat(moved.pitch)
+          .writeInt(0) // PositionUpdateRelatives bitmask
           .writeBoolean(true);
       } else {
-        // 1.21 (767) Teleport Entity: entityId, x, y, z, yaw(Angle), pitch(Angle), onGround(Boolean)
         w.writeDouble(moved.x)
           .writeDouble(moved.y)
           .writeDouble(moved.z)
@@ -1259,10 +1853,10 @@ export class MinecraftServerEngine extends EventEmitter {
       // Ignore write error while disconnecting
     }
     conn.socket.end();
-    this.handleSocketClose(conn);
+    this.handleSocketClose(conn, reason);
   }
 
-  private handleSocketClose(conn: ClientConnection): void {
+  private handleSocketClose(conn: ClientConnection, closeReason = 'Disconnected'): void {
     if (conn.closed) return;
     conn.closed = true;
     this.connections.delete(conn.id);
@@ -1271,7 +1865,6 @@ export class MinecraftServerEngine extends EventEmitter {
       const player = conn.player;
       this.players.delete(player.uuid);
 
-      // Remove entity & tab entry for remaining players
       const removeEntities = new PacketWriter().writeVarInt(1).writeVarInt(player.entityId).toBuffer();
       const removeInfo = new PacketWriter().writeVarInt(1).writeUUID(player.uuid).toBuffer();
       for (const other of this.players.values()) {
@@ -1279,17 +1872,25 @@ export class MinecraftServerEngine extends EventEmitter {
         this.sendPacket(other.connection, other.connection.profile.clientbound.PLAY.player_info_remove, removeInfo);
       }
 
-      this.log('Quit', `${player.username} left the game`, 'INFO');
+      this.log('Quit', `${player.username} left the game (${closeReason})`, 'INFO');
       this.emitPlayers();
       void this.pluginManager.emitPlayerQuit(this.toPluginPlayer(player));
+    } else if (conn.state !== 'STATUS') {
+      const ageMs = Date.now() - conn.openedAt;
+      this.log(
+        'Network',
+        `Closed ${conn.id} (${conn.username ?? normalizeIp(conn.socket.remoteAddress)}) at state=${conn.state} proto=${conn.profile.label} (${ageMs}ms, rx=${conn.rxBytes}B, tx=${conn.txBytes}B): ${closeReason}`,
+        'PROTOCOL'
+      );
     }
   }
 
   private sendPacket(conn: ClientConnection, packetId: number, payload: Buffer): void {
-    if (conn.closed) return;
+    if (conn.closed || packetId === undefined) return;
     try {
       const { framed, compressed, rawLength } = framePacket(packetId, payload, conn.compressionThreshold);
       conn.socket.write(framed);
+      conn.txBytes += framed.length;
       this.totalPacketsOut++;
 
       const packetName = ProtocolMapper.getClientboundName(conn.state, packetId, conn.profile);
@@ -1306,7 +1907,7 @@ export class MinecraftServerEngine extends EventEmitter {
         hexPreview: payload.subarray(0, 24).toString('hex'),
       });
     } catch {
-      this.handleSocketClose(conn);
+      this.handleSocketClose(conn, 'Socket write error');
     }
   }
 
@@ -1328,6 +1929,9 @@ export class MinecraftServerEngine extends EventEmitter {
       setGameMode: (mode) => {
         p.gamemode = mode;
         if (mode === 'creative' || mode === 'spectator') p.isFlying = true;
+        // Send vanilla Change Game Mode GameEvent (event 3, mode 0..3) + PlayerAbilities!
+        const evt = new PacketWriter().writeUByte(3).writeFloat(this.gameModeToByte(mode));
+        this.sendPacket(p.connection, p.connection.profile.clientbound.PLAY.game_event, evt.toBuffer());
         this.sendPlayerAbilities(p);
         this.emitPlayers();
       },
@@ -1504,7 +2108,7 @@ export class MinecraftServerEngine extends EventEmitter {
   }
 
   public getPlayers(): PlayerInfo[] {
-    return Array.from(this.players.values()).map(({ connection: _c, ...rest }) => rest);
+    return Array.from(this.players.values()).map(({ connection: _c, selectedSlot: _s, hotbarBlocks: _h, sneaking: _sn, sprinting: _sp, ...rest }) => rest);
   }
 
   public getBans(): BannedPlayer[] {

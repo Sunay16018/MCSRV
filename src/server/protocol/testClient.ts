@@ -24,12 +24,18 @@ interface ActiveBotSession {
   compressionThreshold: number;
   state: 'HANDSHAKE' | 'LOGIN' | 'CONFIGURATION' | 'PLAY';
   buffer: Buffer;
+  seenConfigPackets: Set<number>;
+  seenChunks: number;
+  batchActive: boolean;
 }
 
 const activeBots = new Map<string, ActiveBotSession>();
 
-// Opens a real TCP socket to the Minecraft 26.3 server and performs Status + Ping-Pong
-export async function runRealStatusProbe(port: number): Promise<StatusProbeResult> {
+// Opens a real TCP socket to the Minecraft server and performs Status + Ping-Pong
+export async function runRealStatusProbe(
+  port: number,
+  protocolVersion: number = PRIMARY_PROTOCOL_VERSION
+): Promise<StatusProbeResult> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host: '127.0.0.1', port });
     let buffer: Buffer = Buffer.alloc(0);
@@ -48,7 +54,7 @@ export async function runRealStatusProbe(port: number): Promise<StatusProbeResul
 
     socket.on('connect', () => {
       const hs = new PacketWriter()
-        .writeVarInt(PRIMARY_PROTOCOL_VERSION)
+        .writeVarInt(protocolVersion)
         .writeString('127.0.0.1')
         .writeUShort(port)
         .writeVarInt(1)
@@ -113,13 +119,18 @@ export async function spawnRealProtocolBot(
       compressionThreshold: -1,
       state: 'HANDSHAKE',
       buffer: Buffer.alloc(0) as Buffer,
+      seenConfigPackets: new Set<number>(),
+      seenChunks: 0,
+      batchActive: false,
     };
+
+    let joinedResolved = false;
 
     const timeout = setTimeout(() => {
       socket.destroy();
       activeBots.delete(username);
-      reject(new Error('Bot login handshake timed out'));
-    }, 4000);
+      reject(new Error(`Bot login handshake timed out at state=${session.state} (proto=${protocolVersion})`));
+    }, 5000);
 
     socket.on('connect', () => {
       const hs = new PacketWriter()
@@ -156,6 +167,20 @@ export async function spawnRealProtocolBot(
             if (pkt.packetId === profile.clientbound.LOGIN.set_compression) {
               session.compressionThreshold = reader.readVarInt();
             } else if (pkt.packetId === profile.clientbound.LOGIN.login_success) {
+              reader.readUUID(); // uuid
+              reader.readString(); // name
+              const propCount = reader.readVarInt();
+              for (let i = 0; i < propCount; i++) {
+                reader.readString();
+                reader.readString();
+                if (reader.readBoolean()) reader.readString();
+              }
+              if (profile.hasStrictLoginSuccessFlag) {
+                reader.readBoolean();
+              } else if (profile.hasSessionIdInLoginSuccess) {
+                reader.readUUID(); // sessionId introduced in 26.2 (776+)
+              }
+
               // Login Success -> send Login Acknowledged (0x03)
               socket.write(framePacket(0x03, Buffer.alloc(0), session.compressionThreshold).framed);
               session.state = 'CONFIGURATION';
@@ -168,20 +193,40 @@ export async function spawnRealProtocolBot(
               return;
             }
           } else if (session.state === 'CONFIGURATION') {
-            if (pkt.packetId === profile.clientbound.CONFIGURATION.select_known_packs) {
+            session.seenConfigPackets.add(pkt.packetId);
+            if (pkt.packetId === profile.clientbound.CONFIGURATION.keep_alive) {
+              const keepId = reader.readLong();
+              socket.write(
+                framePacket(0x04, new PacketWriter().writeLong(keepId).toBuffer(), session.compressionThreshold).framed
+              );
+            } else if (pkt.packetId === profile.clientbound.CONFIGURATION.select_known_packs) {
+              const packCount = reader.readVarInt();
+              let matchedVer = profile.knownPackVersion;
+              for (let i = 0; i < packCount; i++) {
+                const ns = reader.readString();
+                const id = reader.readString();
+                const ver = reader.readString();
+                if (ns === 'minecraft' && id === 'core' && i === 0) {
+                  matchedVer = ver;
+                }
+              }
               const ackKnown = new PacketWriter()
                 .writeVarInt(1)
                 .writeString('minecraft')
                 .writeString('core')
-                .writeString(profile.knownPackVersion)
+                .writeString(matchedVer)
                 .toBuffer();
               socket.write(framePacket(0x07, ackKnown, session.compressionThreshold).framed);
             } else if (pkt.packetId === profile.clientbound.CONFIGURATION.finish_configuration) {
+              if (!session.seenConfigPackets.has(profile.clientbound.CONFIGURATION.update_tags)) {
+                clearTimeout(timeout);
+                socket.destroy();
+                reject(new Error(`Missing update_tags during configuration (proto=${protocolVersion})`));
+                return;
+              }
               socket.write(framePacket(0x03, Buffer.alloc(0), session.compressionThreshold).framed);
               session.state = 'PLAY';
               activeBots.set(username, session);
-              clearTimeout(timeout);
-              resolve(username);
             }
           } else if (session.state === 'PLAY') {
             if (pkt.packetId === profile.clientbound.PLAY.keep_alive) {
@@ -189,30 +234,60 @@ export async function spawnRealProtocolBot(
               const sbKeepId = ProtocolMapper.getServerboundId('PLAY', 'keep_alive', profile) ?? 0x18;
               const pong = new PacketWriter().writeLong(keepId).toBuffer();
               socket.write(framePacket(sbKeepId, pong, session.compressionThreshold).framed);
+            } else if (pkt.packetId === profile.clientbound.PLAY.chunk_batch_start) {
+              session.batchActive = true;
+            } else if (pkt.packetId === profile.clientbound.PLAY.level_chunk_with_light) {
+              session.seenChunks++;
+            } else if (pkt.packetId === profile.clientbound.PLAY.chunk_batch_finished) {
+              session.batchActive = false;
+              const ackBatchId = ProtocolMapper.getServerboundId('PLAY', 'chunk_batch_received', profile);
+              if (ackBatchId !== undefined) {
+                const w = new PacketWriter().writeFloat(20.0).toBuffer();
+                socket.write(framePacket(ackBatchId, w, session.compressionThreshold).framed);
+              }
             } else if (pkt.packetId === profile.clientbound.PLAY.player_position) {
+              const tpId = profile.hasVelocityInPlayerPosition ? reader.readVarInt() : 1;
               const ackId = ProtocolMapper.getServerboundId('PLAY', 'confirm_teleportation', profile) ?? 0x00;
-              const tpAck = new PacketWriter().writeVarInt(1).toBuffer();
+              const tpAck = new PacketWriter().writeVarInt(tpId).toBuffer();
               socket.write(framePacket(ackId, tpAck, session.compressionThreshold).framed);
+
+              const loadedId = ProtocolMapper.getServerboundId('PLAY', 'player_loaded', profile);
+              if (loadedId !== undefined) {
+                socket.write(framePacket(loadedId, Buffer.alloc(0), session.compressionThreshold).framed);
+              }
+
+              if (!joinedResolved) {
+                joinedResolved = true;
+                clearTimeout(timeout);
+                resolve(username);
+              }
             }
           }
         }
-      } catch {
-        // Ignore parser error in bot probe
+      } catch (err) {
+        if (!joinedResolved) {
+          clearTimeout(timeout);
+          socket.destroy();
+          activeBots.delete(username);
+          reject(err);
+        }
       }
     });
 
     socket.on('close', () => {
       activeBots.delete(username);
-      if (session.state !== 'PLAY') {
+      if (!joinedResolved) {
         clearTimeout(timeout);
-        reject(new Error('Connection closed by server before entering Play state'));
+        reject(new Error(`Connection closed before Play ready (state=${session.state}, proto=${protocolVersion})`));
       }
     });
 
     socket.on('error', (err) => {
       clearTimeout(timeout);
       activeBots.delete(username);
-      reject(err);
+      if (!joinedResolved) {
+        reject(err);
+      }
     });
   });
 }

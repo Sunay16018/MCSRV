@@ -11,9 +11,6 @@ const bunGlobal = (globalThis as unknown as {
 
 export function zlibDeflate(data: Uint8Array): Buffer {
   if (bunGlobal?.deflateSync) {
-    // Bun.deflateSync produces raw deflate by default unless zlib header is added,
-    // whereas Minecraft uses zlib-wrapped deflate (RFC 1950). node:zlib deflateSync in Bun
-    // uses Bun's native Zig/libdeflate bindings with RFC 1950 header!
     return zlib.deflateSync(data);
   }
   return zlib.deflateSync(data);
@@ -128,7 +125,7 @@ export class PacketReader {
         throw new PacketCodecError('VarInt exceeds maximum 5 bytes');
       }
     } while ((read & 0b10000000) !== 0);
-    return result;
+    return result | 0;
   }
 
   readString(maxLength = 32767): string {
@@ -260,6 +257,23 @@ export class PacketWriter {
     return this;
   }
 
+  writeVarLong(value: bigint | number): this {
+    let val = BigInt.asUintN(64, typeof value === 'bigint' ? value : BigInt(value));
+    const out: number[] = [];
+    while (true) {
+      if ((val & ~0x7fn) === 0n) {
+        out.push(Number(val));
+        break;
+      }
+      out.push(Number(val & 0x7fn) | 0x80);
+      val >>= 7n;
+    }
+    const buf = Buffer.from(out);
+    this.chunks.push(buf);
+    this.totalLen += buf.length;
+    return this;
+  }
+
   writeString(str: string): this {
     const strBuf = Buffer.from(str, 'utf8');
     this.writeVarInt(strBuf.length);
@@ -291,6 +305,12 @@ export class PacketWriter {
     return this;
   }
 
+  private writeNbtTagName(name: string): void {
+    const nameBuf = Buffer.from(name, 'utf8');
+    this.writeUShort(nameBuf.length);
+    this.writeBytes(nameBuf);
+  }
+
   // Network NBT (root nameless Compound tag: tagType=10, then entries, then tagEnd=0)
   writeNbtTextComponent(text: string): this {
     this.writeUByte(10); // TAG_Compound (nameless in network NBT 1.20.2+)
@@ -301,9 +321,14 @@ export class PacketWriter {
 
   writeNbtString(name: string, value: string): this {
     this.writeUByte(8); // TAG_String
-    const nameBuf = Buffer.from(name, 'utf8');
-    this.writeUShort(nameBuf.length);
-    this.writeBytes(nameBuf);
+    this.writeNbtTagName(name);
+    const valBuf = Buffer.from(value, 'utf8');
+    this.writeUShort(valBuf.length);
+    this.writeBytes(valBuf);
+    return this;
+  }
+
+  writeNbtAnonymousString(value: string): this {
     const valBuf = Buffer.from(value, 'utf8');
     this.writeUShort(valBuf.length);
     this.writeBytes(valBuf);
@@ -312,36 +337,57 @@ export class PacketWriter {
 
   writeNbtInt(name: string, value: number): this {
     this.writeUByte(3); // TAG_Int
-    const nameBuf = Buffer.from(name, 'utf8');
-    this.writeUShort(nameBuf.length);
-    this.writeBytes(nameBuf);
+    this.writeNbtTagName(name);
     this.writeInt(value);
     return this;
   }
 
   writeNbtFloat(name: string, value: number): this {
     this.writeUByte(5); // TAG_Float
-    const nameBuf = Buffer.from(name, 'utf8');
-    this.writeUShort(nameBuf.length);
-    this.writeBytes(nameBuf);
+    this.writeNbtTagName(name);
     this.writeFloat(value);
+    return this;
+  }
+
+  writeNbtDouble(name: string, value: number): this {
+    this.writeUByte(6); // TAG_Double
+    this.writeNbtTagName(name);
+    this.writeDouble(value);
     return this;
   }
 
   writeNbtByte(name: string, value: number): this {
     this.writeUByte(1); // TAG_Byte
-    const nameBuf = Buffer.from(name, 'utf8');
-    this.writeUShort(nameBuf.length);
-    this.writeBytes(nameBuf);
+    this.writeNbtTagName(name);
     this.writeByte(value);
+    return this;
+  }
+
+  writeNbtBoolean(name: string, value: boolean): this {
+    return this.writeNbtByte(name, value ? 1 : 0);
+  }
+
+  writeNbtListStart(name: string, elementType: number, length: number): this {
+    this.writeUByte(9); // TAG_List
+    this.writeNbtTagName(name);
+    this.writeUByte(elementType);
+    this.writeInt(length);
+    return this;
+  }
+
+  writeNbtIntArray(name: string, values: number[]): this {
+    this.writeUByte(11); // TAG_Int_Array
+    this.writeNbtTagName(name);
+    this.writeInt(values.length);
+    for (const v of values) {
+      this.writeInt(v);
+    }
     return this;
   }
 
   writeNbtLongArray(name: string, values: bigint[]): this {
     this.writeUByte(12); // TAG_Long_Array
-    const nameBuf = Buffer.from(name, 'utf8');
-    this.writeUShort(nameBuf.length);
-    this.writeBytes(nameBuf);
+    this.writeNbtTagName(name);
     this.writeInt(values.length);
     for (const v of values) {
       this.writeLong(v);
@@ -352,9 +398,7 @@ export class PacketWriter {
   writeNbtCompoundStart(name?: string): this {
     this.writeUByte(10); // TAG_Compound
     if (name !== undefined) {
-      const nameBuf = Buffer.from(name, 'utf8');
-      this.writeUShort(nameBuf.length);
-      this.writeBytes(nameBuf);
+      this.writeNbtTagName(name);
     }
     return this;
   }
@@ -385,10 +429,10 @@ export function tryReadVarInt(buffer: Buffer, startOffset = 0): { value: number;
       throw new PacketCodecError('Malformed packet length VarInt (> 5 bytes)');
     }
     if ((read & 0x80) === 0) {
-      return { value: result, bytesRead: numRead };
+      return { value: result | 0, bytesRead: numRead };
     }
   }
-  return null; // Incomplete VarInt, wait for more TCP bytes
+  return null;
 }
 
 export function framePacket(
@@ -568,21 +612,20 @@ export function getServerFavicon(): string {
 
   for (let y = 0; y < height; y++) {
     const rowStart = y * (1 + width * 4);
-    raw[rowStart] = 0; // filter type 0
+    raw[rowStart] = 0;
     for (let x = 0; x < width; x++) {
       const px = rowStart + 1 + x * 4;
       const dx = Math.abs(x - 31.5);
       const dy = Math.abs(y - 31.5);
       const dist = Math.max(dx, dy);
 
-      // Emerald & obsidian geometric emblem
       let r = 13;
       let g = 17;
       let b = 26;
       if (dist < 28 && dist >= 25) {
-        r = 16; g = 185; b = 129; // outer emerald frame
+        r = 16; g = 185; b = 129;
       } else if (dx + dy < 18) {
-        r = 16; g = 185; b = 129; // inner diamond core
+        r = 16; g = 185; b = 129;
         if (dx + dy < 9) {
           r = 110; g = 231; b = 183;
         }
@@ -600,8 +643,8 @@ export function getServerFavicon(): string {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 6; // RGBA
+  ihdr[8] = 8;
+  ihdr[9] = 6;
   ihdr[10] = 0;
   ihdr[11] = 0;
   ihdr[12] = 0;

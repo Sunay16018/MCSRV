@@ -498,11 +498,16 @@ export function DashboardView({
               className="px-2.5 py-2 text-xs font-mono bg-[#0b0e14] border border-slate-800 rounded-md text-slate-200 focus:outline-none focus:border-emerald-500"
             >
               <option value={777}>26.3 (Proto 777 Native)</option>
+              <option value={776}>26.2 (Proto 776 Via)</option>
               <option value={775}>26.1 (Proto 775 Via)</option>
               <option value={774}>1.21.11 (Proto 774 Via)</option>
+              <option value={773}>1.21.9 / 1.21.10 (Proto 773 Via)</option>
+              <option value={772}>1.21.7 / 1.21.8 (Proto 772 Via)</option>
+              <option value={771}>1.21.6 (Proto 771 Via)</option>
               <option value={770}>1.21.5 (Proto 770 Via)</option>
               <option value={769}>1.21.4 (Proto 769 Via)</option>
-              <option value={767}>1.21 (Proto 767 Via)</option>
+              <option value={768}>1.21.2 / 1.21.3 (Proto 768 Via)</option>
+              <option value={767}>1.21 / 1.21.1 (Proto 767 Via)</option>
             </select>
             <button
               onClick={spawnProbePlayer}
